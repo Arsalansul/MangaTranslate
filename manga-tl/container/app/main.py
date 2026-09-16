@@ -12,7 +12,16 @@ import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from pydantic import BaseModel
 
-from .detect import detect, DETECTOR_NAME
+from . import detect as _morph
+from . import detect_nn as _nn
+
+# Нейросетевой детектор, если веса примонтированы; иначе морфология.
+# Откат нужен не для красоты: без него контейнер не поднимется там, где
+# модель ещё не скачана, и связка с Photoshop окажется непроверяемой.
+if _nn.available():
+    detect, DETECTOR_NAME = _nn.detect, _nn.DETECTOR_NAME
+else:
+    detect, DETECTOR_NAME = _morph.detect, _morph.DETECTOR_NAME
 from .ocr import read_regions, OCR_NAME
 from .schema import PageAnalysis
 
