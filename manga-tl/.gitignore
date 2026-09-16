@@ -1,0 +1,23 @@
+# Результаты прогонов: тяжёлые и воспроизводимые, в истории им не место.
+out/
+*.psd
+out_analysis.json
+
+# Веса моделей качаются при сборке образа.
+container/models/
+*.onnx
+*.pt
+
+# Локальные переопределения путей к главам.
+.env
+docker-compose.override.yml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Служебное
+*.log
+.DS_Store
+Thumbs.db

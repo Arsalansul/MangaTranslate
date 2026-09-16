@@ -1,0 +1,12 @@
+services:
+  cv:
+    build: ./container
+    image: manga-tl-cv:0.1.0
+    ports:
+      - "8765:8000"
+    volumes:
+      # Каталог с главами. Только чтение: контейнер не должен трогать исходники.
+      - "${PAGES_HOST:-E:/mwx-json/downloads/mangabuff}:/pages:ro"
+    environment:
+      PAGES_ROOT: /pages
+    restart: unless-stopped
