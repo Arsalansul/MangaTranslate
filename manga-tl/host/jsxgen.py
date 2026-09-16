@@ -128,6 +128,7 @@ def build(src_img: str, psd_out: str, png_out: str, report_out: str,
     parts = [HEADER]
     parts.append("var SRC = %s, PSD = %s, PNG = %s, REPORT = %s, FONT = %s;"
                  % (esc(src_img), esc(psd_out), esc(png_out), esc(report_out), esc(font)))
+    parts.append("var FONT_OK = false;")
     parts.append("var REGIONS = [" + ",".join(_region_literal(r) for r in regions) + "];")
     parts.append("""
 var doc = null;
@@ -136,6 +137,21 @@ step('setup', function () {
   app.preferences.typeUnits = TypeUnits.PIXELS;
   doc = app.open(new File(SRC));
   return doc.width + 'x' + doc.height;
+});
+
+// Photoshop на неизвестное имя шрифта не ругается, а молча подставляет
+// другой: PSD выходит правдоподобным и неправильным одновременно. Поэтому
+// имя сверяется со списком установленных до вёрстки, и если шрифта нет,
+// текст не ставится вовсе — стирание всё равно останется полезным, а в
+// отчёте будет видно, почему страница пустая.
+step('font', function () {
+  for (var i = 0; i < app.fonts.length; i++) {
+    if (app.fonts[i].postScriptName == FONT) {
+      FONT_OK = true;
+      return FONT + ' = ' + app.fonts[i].name;
+    }
+  }
+  throw new Error('font not installed: ' + FONT);
 });
 
 // Проход 1: стираем оригинал. Все стирания идут по фоновому слою,
@@ -160,6 +176,7 @@ step('erase_all', function () {
         parts.append("""
 // Проход 2: вёрстка переводов.
 step('typeset_all', function () {
+  if (!FONT_OK) return 'skipped: font not installed';
   var placed = 0, overflow = [];
   for (var i = 0; i < REGIONS.length; i++) {
     var r = REGIONS[i];

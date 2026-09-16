@@ -79,7 +79,12 @@ def run_jsx(jsx: str, timeout: int = 900) -> str:
             pass
 
 
-def render(analysis: dict, src_img: str, out_dir: str, font: str = "Arial-BoldMT",
+# PostScript-имя, а не то, что Photoshop показывает в списке.
+# Свериться и вытащить имя: python host/fontcheck.py
+DEFAULT_FONT = "NMDozor-Regular"
+
+
+def render(analysis: dict, src_img: str, out_dir: str, font: str = DEFAULT_FONT,
            erase_only: bool = False) -> dict:
     """Стирает оригинал и верстает переводы; возвращает пути и отчёт по шагам."""
     os.makedirs(out_dir, exist_ok=True)
