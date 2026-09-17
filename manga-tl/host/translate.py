@@ -5,6 +5,11 @@
 или руками. Граница нужна, чтобы движок перевода можно было поменять, не
 трогая ни контейнер, ни Photoshop.
 
+Движков два вида. Anthropic — свой протокол; всё остальное (Gemini, Groq,
+OpenRouter, локальные Ollama и LM Studio) говорит по OpenAI-совместимому
+/chat/completions, поэтому один код покрывает их скопом. Меняется только
+адрес, имя модели и переменная с ключом.
+
 Только stdlib: хост остаётся чистым, тяжёлые зависимости живут в контейнере.
 """
 import json
@@ -14,9 +19,63 @@ import time
 import urllib.error
 import urllib.request
 
-API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
-DEFAULT_MODEL = "claude-sonnet-5"
+
+# Готовые адреса. Модель у каждого можно переопределить: списки меняются
+# чаще, чем этот файл, а у бесплатных провайдеров — особенно часто.
+BACKENDS = {
+    "anthropic": {
+        "kind": "anthropic",
+        "url": "https://api.anthropic.com/v1/messages",
+        "key_env": "ANTHROPIC_API_KEY",
+        "model": "claude-sonnet-5",
+        "json_mode": False,
+        "note": "платный, по токенам; лучшее качество перевода",
+    },
+    "gemini": {
+        "kind": "openai",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "key_env": "GEMINI_API_KEY",
+        "model": "gemini-2.5-flash",
+        "json_mode": True,
+        "note": "бесплатный лимит; ключ в Google AI Studio",
+    },
+    "groq": {
+        "kind": "openai",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "key_env": "GROQ_API_KEY",
+        "model": "llama-3.3-70b-versatile",
+        "json_mode": True,
+        "note": "бесплатный лимит; быстрый, по-русски слабее",
+    },
+    "openrouter": {
+        "kind": "openai",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "key_env": "OPENROUTER_API_KEY",
+        "model": "deepseek/deepseek-chat-v3.1:free",
+        "json_mode": True,
+        "note": "витрина чужих моделей; бесплатные помечены :free",
+    },
+    "ollama": {
+        "kind": "openai",
+        "url": "http://127.0.0.1:11434/v1/chat/completions",
+        "key_env": None,
+        "model": "qwen2.5:14b",
+        "json_mode": True,
+        "note": "локально, без ключа и без лимитов; качество ниже",
+    },
+    "lmstudio": {
+        "kind": "openai",
+        "url": "http://127.0.0.1:1234/v1/chat/completions",
+        "key_env": None,
+        "model": "local-model",
+        "json_mode": False,
+        "note": "локально, модель выбирается в самом LM Studio",
+    },
+}
+
+DEFAULT_PROVIDER = "anthropic"
+DEFAULT_MODEL = BACKENDS[DEFAULT_PROVIDER]["model"]
 
 # Регион переводится, если в нём есть что переводить и он не звук.
 # SFX намеренно пропускаем: без перевода регион не стирается вовсе,
@@ -78,43 +137,9 @@ def _payload(regions, glossary):
     }
 
 
-def _call(prompt: str, api_key: str, model: str, timeout: int = 180) -> str:
-    body = json.dumps({
-        "model": model,
-        "max_tokens": 4096,
-        "messages": [{"role": "user", "content": prompt}],
-    }).encode("utf-8")
-
-    req = urllib.request.Request(API_URL, data=body, headers={
-        "content-type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": API_VERSION,
-    })
-
-    # Перегрузку и пятисотки повторяем: прогон главы идёт десятками запросов
-    # подряд, и ронять его целиком из-за одного 529 бессмысленно.
-    last = None
-    for attempt in range(4):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            return "".join(b.get("text", "") for b in data.get("content", []))
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:300]
-            if e.code in (429, 500, 502, 503, 529):
-                last = "HTTP %d: %s" % (e.code, detail)
-                time.sleep(2 ** attempt)
-                continue
-            raise TranslateError("HTTP %d: %s" % (e.code, detail))
-        except urllib.error.URLError as e:
-            last = str(e)
-            time.sleep(2 ** attempt)
-    raise TranslateError("API недоступен после четырёх попыток: %s" % last)
-
-
 def _parse(raw: str) -> dict:
     """Достаёт JSON из ответа, даже если модель обернула его в ограду."""
-    text = raw.strip()
+    text = (raw or "").strip()
     fence = re.search(r"```(?:json)?\s*(.+?)```", text, re.S)
     if fence:
         text = fence.group(1).strip()
@@ -131,27 +156,129 @@ def _parse(raw: str) -> dict:
     return out
 
 
-def translate_page(analysis: dict, api_key: str, model: str = DEFAULT_MODEL,
-                   glossary: dict = None) -> int:
-    """Проставляет translation в подходящих регионах. Возвращает их число."""
-    targets = [r for r in analysis["regions"] if translatable(r)]
-    if not targets:
-        return 0
+class Engine:
+    """Один провайдер перевода: куда стучаться, чем и под каким ключом."""
 
-    got = _parse(_call(_payload(targets, glossary), api_key, model))
+    def __init__(self, provider: str = DEFAULT_PROVIDER, model: str = None,
+                 api_key: str = None, url: str = None, timeout: int = 180):
+        if provider not in BACKENDS:
+            raise TranslateError(
+                "Неизвестный провайдер %r. Есть: %s"
+                % (provider, ", ".join(sorted(BACKENDS))))
+        cfg = BACKENDS[provider]
+        self.provider = provider
+        self.kind = cfg["kind"]
+        self.url = url or cfg["url"]
+        self.model = model or cfg["model"]
+        self.json_mode = cfg["json_mode"]
+        self.key_env = cfg["key_env"]
+        self.api_key = api_key or (os.environ.get(cfg["key_env"], "").strip()
+                                   if cfg["key_env"] else "")
+        # Локальная модель на CPU думает минутами, а не секундами.
+        self.timeout = timeout if self.key_env else max(timeout, 900)
 
-    filled = 0
-    for r in targets:
-        value = (got.get(r["id"]) or "").strip()
-        if not value:
-            continue
-        # Капс восстанавливаем здесь, а не просим у модели: так результат
-        # не зависит от того, послушалась она или нет.
-        if r.get("all_caps"):
-            value = value.upper()
-        r["translation"] = value
-        filled += 1
-    return filled
+    def describe(self) -> str:
+        return "%s / %s" % (self.provider, self.model)
+
+    def check(self):
+        """Ключ проверяем до первой страницы: глава — это десятки минут."""
+        if self.key_env and not self.api_key:
+            raise TranslateError(
+                "Нет ключа для %s. Задайте %s или --api-key.\n"
+                "Бесплатные варианты: --provider gemini | groq | openrouter "
+                "(свои ключи, бесплатный лимит) или --provider ollama "
+                "(локально, без ключа).\n"
+                "Совсем без модели: --no-translate (только стирание) или "
+                "--reuse (переводы из сохранённых analysis.json)."
+                % (self.provider, self.key_env))
+
+    # --- транспорт ----------------------------------------------------
+
+    def _request(self, prompt, json_mode):
+        if self.kind == "anthropic":
+            body = {
+                "model": self.model,
+                "max_tokens": 4096,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            headers = {
+                "content-type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": API_VERSION,
+            }
+        else:
+            body = {
+                "model": self.model,
+                "max_tokens": 4096,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            if json_mode:
+                body["response_format"] = {"type": "json_object"}
+            headers = {"content-type": "application/json"}
+            if self.api_key:
+                headers["authorization"] = "Bearer " + self.api_key
+        return urllib.request.Request(
+            self.url, data=json.dumps(body).encode("utf-8"), headers=headers)
+
+    def _text(self, data):
+        if self.kind == "anthropic":
+            return "".join(b.get("text", "") for b in data.get("content", []))
+        choices = data.get("choices") or []
+        if not choices:
+            raise TranslateError("Пустой ответ: %s" % json.dumps(data)[:300])
+        return choices[0].get("message", {}).get("content") or ""
+
+    def _call(self, prompt: str) -> str:
+        json_mode = self.json_mode
+        # Перегрузку и пятисотки повторяем: прогон главы идёт десятками
+        # запросов подряд, и ронять его целиком из-за одного 429 бессмысленно.
+        last = None
+        for attempt in range(4):
+            try:
+                with urllib.request.urlopen(self._request(prompt, json_mode),
+                                            timeout=self.timeout) as resp:
+                    return self._text(json.loads(resp.read().decode("utf-8")))
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode("utf-8", "replace")[:300]
+                # JSON-режим поддерживают не все модели на OpenAI-совместимых
+                # витринах. Отказ от него дешевле, чем падение главы: разбор
+                # ответа всё равно умеет доставать объект из текста.
+                if e.code == 400 and json_mode and "response_format" in detail:
+                    json_mode = False
+                    continue
+                if e.code in (429, 500, 502, 503, 529):
+                    last = "HTTP %d: %s" % (e.code, detail)
+                    time.sleep(2 ** attempt)
+                    continue
+                raise TranslateError("HTTP %d: %s" % (e.code, detail))
+            except urllib.error.URLError as e:
+                last = str(e)
+                time.sleep(2 ** attempt)
+        raise TranslateError("%s недоступен после четырёх попыток: %s"
+                             % (self.url, last))
+
+    # --- то, ради чего всё -------------------------------------------
+
+    def translate_page(self, analysis: dict, glossary: dict = None) -> int:
+        """Проставляет translation в подходящих регионах. Возвращает их число."""
+        targets = [r for r in analysis["regions"] if translatable(r)]
+        if not targets:
+            return 0
+
+        got = _parse(self._call(_payload(targets, glossary)))
+
+        filled = 0
+        for r in targets:
+            value = (got.get(r["id"]) or "").strip()
+            if not value:
+                continue
+            # Капс восстанавливаем здесь, а не просим у модели: так результат
+            # не зависит от того, послушалась она или нет.
+            if r.get("all_caps"):
+                value = value.upper()
+            r["translation"] = value
+            filled += 1
+        return filled
 
 
 def load_glossary(path: str) -> dict:
@@ -164,5 +291,13 @@ def load_glossary(path: str) -> dict:
     return data
 
 
-def api_key_from_env() -> str:
-    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
+def providers_help() -> str:
+    rows = []
+    for name in sorted(BACKENDS):
+        cfg = BACKENDS[name]
+        rows.append("  %-11s %-34s %s" % (name, cfg["model"], cfg["note"]))
+    return "\n".join(rows)
+
+
+if __name__ == "__main__":
+    print("Провайдеры перевода:\n" + providers_help())

@@ -35,7 +35,7 @@ def list_pages(full_dir):
     return names
 
 
-def preflight(args):
+def preflight(args, engine):
     """Проверяем всё, что можно проверить, до первой страницы.
 
     Глава — это десятки минут работы. Узнать на двадцатой странице, что не
@@ -48,16 +48,15 @@ def preflight(args):
             "CV-контейнер недоступен по %s: %s\n"
             "Поднять: docker compose up -d" % (bridge.CV_URL, e))
 
-    needs_model = not (args.no_translate or args.erase_only or args.reuse)
-    if needs_model and not args.api_key:
-        raise SystemExit(
-            "Нет ключа для перевода. Задайте ANTHROPIC_API_KEY или --api-key.\n"
-            "Без модели: --no-translate (только стирание) или --reuse "
-            "(взять переводы из ранее сохранённых analysis.json).")
+    if not (args.no_translate or args.erase_only or args.reuse):
+        try:
+            engine.check()
+        except translate.TranslateError as e:
+            raise SystemExit(str(e))
     return h
 
 
-def process(name, full_dir, out_dir, args, glossary):
+def process(name, full_dir, out_dir, args, engine, glossary):
     src = os.path.join(full_dir, name)
     stem = os.path.splitext(name)[0]
     apath = os.path.join(out_dir, stem + ".analysis.json")
@@ -86,8 +85,7 @@ def process(name, full_dir, out_dir, args, glossary):
     elif args.reuse and already:
         row["translated"] = already
     else:
-        row["translated"] = translate.translate_page(
-            analysis, args.api_key, model=args.model, glossary=glossary)
+        row["translated"] = engine.translate_page(analysis, glossary=glossary)
     print("       регионов %d, с переводом %d" % (row["regions"], row["translated"]))
 
     # Сохраняем до Photoshop: если он упадёт, перевод не потеряется.
@@ -120,9 +118,12 @@ def main():
     p.add_argument("--font", default=bridge.DEFAULT_FONT,
                    help="PostScript-имя шрифта; список: python host/fontcheck.py")
     p.add_argument("--lang", default="eng", help="язык OCR (eng)")
-    p.add_argument("--model", default=translate.DEFAULT_MODEL, help="модель перевода")
-    p.add_argument("--api-key", default=translate.api_key_from_env(),
-                   help="ключ Anthropic (по умолчанию из ANTHROPIC_API_KEY)")
+    p.add_argument("--provider", default=translate.DEFAULT_PROVIDER,
+                   choices=sorted(translate.BACKENDS),
+                   help="кто переводит; список: python host/translate.py")
+    p.add_argument("--model", help="модель провайдера (по умолчанию его обычная)")
+    p.add_argument("--api-key", help="ключ провайдера (по умолчанию из его переменной)")
+    p.add_argument("--api-url", help="свой адрес OpenAI-совместимого сервера")
     p.add_argument("--glossary", help='JSON {"Enkrid": "Энкрид"} — имена и термины')
     p.add_argument("--reuse", action="store_true",
                    help="брать анализ и перевод из уже сохранённых analysis.json")
@@ -153,12 +154,15 @@ def main():
     out_dir = _norm(args.out or os.path.join(HERE, "..", "out", os.path.basename(full_dir)))
     os.makedirs(out_dir, exist_ok=True)
 
-    h = preflight(args)
+    engine = translate.Engine(args.provider, model=args.model,
+                              api_key=args.api_key, url=args.api_url)
+    h = preflight(args, engine)
     glossary = translate.load_glossary(args.glossary)
 
     print("глава:   %s" % full_dir)
     print("выход:   %s" % out_dir)
     print("детект:  %s, OCR: %s, шрифт: %s" % (h["detector"], h["ocr"], args.font))
+    print("перевод: %s" % engine.describe())
     if glossary:
         print("глоссарий: %d записей" % len(glossary))
     print("страниц: %d\n" % len(names))
@@ -167,7 +171,7 @@ def main():
     for i, name in enumerate(names, 1):
         print("[%d/%d] %s" % (i, len(names), name))
         try:
-            row = process(name, full_dir, out_dir, args, glossary)
+            row = process(name, full_dir, out_dir, args, engine, glossary)
         except KeyboardInterrupt:
             print("\nпрервано; сделанное лежит в " + out_dir)
             break
@@ -189,7 +193,7 @@ def main():
 
     with open(os.path.join(out_dir, "run.report.json"), "w", encoding="utf-8") as f:
         json.dump({"chapter": full_dir, "out": out_dir, "font": args.font,
-                   "model": args.model, "pages": rows}, f, ensure_ascii=False, indent=2)
+                   "engine": engine.describe(), "pages": rows}, f, ensure_ascii=False, indent=2)
     return 1 if bad else 0
 
 
