@@ -23,6 +23,10 @@ import urllib.request
 API_VERSION = "2023-06-01"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
+# Пауза перед повтором растёт вдвое: 3, 6, 12 секунд. Секунды, с которых
+# начинали раньше, для чужого лимита слишком коротки.
+RETRY_BASE_S = 3
+
 # Готовые адреса. Модель у каждого можно переопределить: списки меняются
 # чаще, чем этот файл, а у бесплатных провайдеров — особенно часто.
 BACKENDS = {
@@ -250,14 +254,31 @@ class Engine:
                     continue
                 if e.code in (429, 500, 502, 503, 529):
                     last = "HTTP %d: %s" % (e.code, detail)
-                    time.sleep(2 ** attempt)
+                    time.sleep(self._pause(attempt, e))
                     continue
                 raise TranslateError("HTTP %d: %s" % (e.code, detail))
             except urllib.error.URLError as e:
                 last = str(e)
-                time.sleep(2 ** attempt)
-        raise TranslateError("%s недоступен после четырёх попыток: %s"
-                             % (self.url, last))
+                time.sleep(self._pause(attempt))
+        hint = ""
+        if "429" in (last or ""):
+            # Бесплатная модель делит чужую квоту со всей витриной, и
+            # переждать её в рамках одного прогона обычно нельзя.
+            hint = ("\nЭто лимит, а не ошибка запроса. У бесплатных моделей он "
+                    "общий на всех: возьмите другую (python host/translate.py "
+                    "openrouter) или платную.")
+        raise TranslateError("%s недоступен после четырёх попыток: %s%s"
+                             % (self.url, last, hint))
+
+    @staticmethod
+    def _pause(attempt, err=None):
+        """Сколько ждать перед повтором: провайдер часто говорит это сам."""
+        after = ""
+        if err is not None and getattr(err, "headers", None):
+            after = (err.headers.get("retry-after") or "").strip()
+        if after.isdigit():
+            return min(int(after), 60)
+        return RETRY_BASE_S * 2 ** attempt
 
     # --- то, ради чего всё -------------------------------------------
 

@@ -22,8 +22,18 @@ EXTS = (".jpg", ".jpeg", ".png", ".webp")
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+# Модель, которая не ответила столько страниц подряд, не ответит и на
+# остальные: лимит или неверное имя не рассасываются сами.
+MAX_TRANSLATE_FAILS = 3
+
+
 def _norm(p):
     return os.path.normpath(os.path.abspath(p)).replace(os.sep, "/")
+
+
+def _save(path, analysis):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(analysis, f, ensure_ascii=False, indent=2)
 
 
 def list_pages(full_dir):
@@ -78,6 +88,11 @@ def process(name, full_dir, out_dir, args, engine, glossary):
         row["note"] = "текст не найден"
         return row
 
+    # Детект стоит десяти секунд на страницу, перевод — чужой сети. Кладём
+    # анализ на диск сразу, чтобы упавший перевод не заставлял детектить заново:
+    # повтор с --reuse возьмёт готовые регионы.
+    _save(apath, analysis)
+
     # --- перевод ------------------------------------------------------
     already = sum(1 for r in analysis["regions"] if (r.get("translation") or "").strip())
     if args.erase_only or args.no_translate:
@@ -85,12 +100,17 @@ def process(name, full_dir, out_dir, args, engine, glossary):
     elif args.reuse and already:
         row["translated"] = already
     else:
-        row["translated"] = engine.translate_page(analysis, glossary=glossary)
+        try:
+            row["translated"] = engine.translate_page(analysis, glossary=glossary)
+        except translate.TranslateError as e:
+            # Строку отдаём наверх вместе с ошибкой: иначе в итоговой
+            # таблице у страницы окажется ноль регионов, хотя детект их нашёл.
+            e.row = row
+            raise
     print("       регионов %d, с переводом %d" % (row["regions"], row["translated"]))
 
     # Сохраняем до Photoshop: если он упадёт, перевод не потеряется.
-    with open(apath, "w", encoding="utf-8") as f:
-        json.dump(analysis, f, ensure_ascii=False, indent=2)
+    _save(apath, analysis)
 
     if args.analyze_only:
         row["ok"] = True
@@ -168,13 +188,22 @@ def main():
     print("страниц: %d\n" % len(names))
 
     rows, t0 = [], time.time()
+    tl_fails = 0
     for i, name in enumerate(names, 1):
         print("[%d/%d] %s" % (i, len(names), name))
         try:
             row = process(name, full_dir, out_dir, args, engine, glossary)
+            tl_fails = 0
         except KeyboardInterrupt:
             print("\nпрервано; сделанное лежит в " + out_dir)
             break
+        except translate.TranslateError as e:
+            # Перевод отказал — это про всю главу, а не про эту страницу.
+            tl_fails += 1
+            row = getattr(e, "row", None) or {"page": name, "regions": 0,
+                                              "translated": 0, "ok": False}
+            row["note"] = "перевод: " + str(e).splitlines()[0][:60]
+            print("       ОШИБКА перевода: %s" % e)
         except Exception as e:
             # Одна испорченная страница не должна ронять главу: остальные
             # всё равно нужны, а к этой вернёмся через --start.
@@ -182,6 +211,12 @@ def main():
                    "note": "%s: %s" % (type(e).__name__, e)}
             print("       ОШИБКА: %s" % e)
         rows.append(row)
+        if tl_fails >= MAX_TRANSLATE_FAILS:
+            print("\nМодель молчит %d страницы подряд — останавливаюсь, чтобы не\n"
+                  "перемалывать главу впустую. Смените --model и запустите с\n"
+                  "--reuse: разметка уже на диске, детект не повторится."
+                  % tl_fails)
+            break
 
     bad = [r for r in rows if not r["ok"]]
     print("\n%-22s %7s %7s  %s" % ("страница", "регион", "перев", "заметка"))
