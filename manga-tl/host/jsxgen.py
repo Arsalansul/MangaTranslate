@@ -87,6 +87,12 @@ function step(name, fn) {
 }
 function writeFile(p, txt) { var f = new File(p); f.encoding = 'UTF-8'; f.open('w'); f.write(txt); f.close(); }
 
+// indexOf у массивов в ExtendScript нет: движок старый, ES3.
+function inList(v, list) {
+  for (var i = 0; i < list.length; i++) if (list[i] === v) return true;
+  return false;
+}
+
 function solidFill(rgb) {
   var c = new SolidColor();
   c.rgb.red = rgb[0]; c.rgb.green = rgb[1]; c.rgb.blue = rgb[2];
@@ -191,13 +197,24 @@ writeFile(REPORT, '[' + R.join(',') + ']');
 def build(src_img: str, psd_out: str, png_out: str, report_out: str,
           regions: List[Dict[str, Any]], font: str,
           min_size: int = 9, erase_only: bool = False,
-          lang: str = "russianLanguage") -> str:
-    """Собирает полный .jsx: стереть все регионы, затем сверстать переводы."""
+          lang: str = "russianLanguage",
+          erase_ids: List[str] = None) -> str:
+    """Собирает полный .jsx: стереть что осталось, затем сверстать переводы.
+
+    erase_ids — список регионов, которые Photoshop должен стереть сам.
+    Обычно стирание уже сделано в контейнере, и приходит пустой список:
+    тогда проход стирания не выполняется вовсе. None означает старый
+    порядок — стирать здесь всё, — и остаётся на случай, когда стереть в
+    контейнере не вышло.
+    """
     parts = [HEADER]
     parts.append("var SRC = %s, PSD = %s, PNG = %s, REPORT = %s, FONT = %s;"
                  % (esc(src_img), esc(psd_out), esc(png_out), esc(report_out), esc(font)))
     parts.append("var FONT_OK = false, ERASE_ALL = %s, LANG = %s;"
                  % ("true" if erase_only else "false", esc(lang)))
+    parts.append("var ERASE_IDS = %s;"
+                 % ("null" if erase_ids is None
+                    else "[" + ",".join(esc(i) for i in erase_ids) + "]"))
     parts.append("var REGIONS = [" + ",".join(_region_literal(r) for r in regions) + "];")
     parts.append("""
 var doc = null;
@@ -228,12 +245,14 @@ step('font', function () {
 // до того как появятся текстовые слои, — иначе заливка возьмёт их в расчёт.
 step('erase_all', function () {
   var done = 0, kept = 0;
+  if (ERASE_IDS !== null && ERASE_IDS.length === 0) return 'erased in container';
   doc.activeLayer = doc.layers[doc.layers.length - 1];
   for (var i = 0; i < REGIONS.length; i++) {
     var r = REGIONS[i];
     // Регион без перевода не трогаем: заливка без замены только портит
     // рисунок. Так остаются нетронутыми звуки и мусорные находки.
     if (!ERASE_ALL && (!r.txt || r.txt.length === 0)) { kept++; continue; }
+    if (ERASE_IDS !== null && !inList(r.id, ERASE_IDS)) { kept++; continue; }
     try {
       doc.selection.select(r.poly);
       // Content-Aware Fill достраивает выделение по остальной странице, а

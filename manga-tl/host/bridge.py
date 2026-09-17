@@ -59,25 +59,65 @@ def analyze_file(img_path: str, lang: str = "eng") -> dict:
     двенадцатимегабайтная лента уходит за миллисекунды, так что выигрыш
     от чтения с диска мнимый, а неудобство от монтирования — настоящее.
     """
+    req = _upload("/analyze?lang=" + urllib.parse.quote(lang), img_path)
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _upload(path: str, img_path: str, fields: dict = None) -> urllib.request.Request:
+    """multipart с картинкой: requests в мост не тащим, хост живёт на stdlib."""
     boundary = "----manga-tl-" + os.urandom(8).hex()
     with open(img_path, "rb") as f:
         blob = f.read()
 
-    name = os.path.basename(img_path)
-    head = (
+    parts = []
+    for key, value in (fields or {}).items():
+        parts.append((
+            "--%s\r\n"
+            'Content-Disposition: form-data; name="%s"\r\n\r\n%s\r\n'
+            % (boundary, key, value)
+        ).encode("utf-8"))
+    parts.append((
         "--%s\r\n"
         'Content-Disposition: form-data; name="file"; filename="%s"\r\n'
-        "Content-Type: application/octet-stream\r\n\r\n" % (boundary, name)
-    ).encode("utf-8")
-    body = head + blob + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+        "Content-Type: application/octet-stream\r\n\r\n"
+        % (boundary, os.path.basename(img_path))
+    ).encode("utf-8"))
 
-    req = urllib.request.Request(
-        CV_URL + "/analyze?lang=" + urllib.parse.quote(lang),
-        data=body,
+    body = b"".join(parts) + blob + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+    return urllib.request.Request(
+        CV_URL + path, data=body,
         headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
     )
-    with urllib.request.urlopen(req, timeout=600) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+
+
+def clean(analysis: dict, src_img: str, out_path: str, force: bool = False) -> dict:
+    """Стирает оригинальный текст в контейнере, кладёт страницу в out_path.
+
+    Стирание переехало из Photoshop сюда. Там оно умело две вещи: залить
+    ровный фон его цветом и вызвать Content-Aware Fill поверх рисунка.
+    Первое осталось, второе заменила модель: Content-Aware Fill собирает
+    заплатку из кусков той же страницы, а страница в этот момент ещё полна
+    текста, и в дыру приезжали буквы из соседних панелей.
+    """
+    req = _upload("/inpaint", src_img, {
+        "regions": json.dumps(analysis["regions"], ensure_ascii=False),
+        "force": "true" if force else "false",
+    })
+    with urllib.request.urlopen(req, timeout=1800) as resp:
+        png, head = resp.read(), resp.headers
+
+    with open(out_path, "wb") as f:
+        f.write(png)
+
+    left = (head.get("X-Left-To-Photoshop") or "").strip()
+    return {
+        "path": out_path,
+        "flat": int(head.get("X-Erased-Flat") or 0),
+        "art": int(head.get("X-Erased-Art") or 0),
+        "passes": int(head.get("X-Inpaint-Passes") or 0),
+        "left": [i for i in left.split(",") if i],
+    }
 
 
 def _fwd(p: str) -> str:
@@ -119,8 +159,17 @@ DEFAULT_FONT = "NMDozor-Regular"
 
 
 def render(analysis: dict, src_img: str, out_dir: str, font: str = DEFAULT_FONT,
-           erase_only: bool = False) -> dict:
-    """Стирает оригинал и верстает переводы; возвращает пути и отчёт по шагам."""
+           erase_only: bool = False, page_img: str = None,
+           erase_ids: list = None) -> dict:
+    """Верстает переводы поверх уже стёртой страницы; пути и отчёт по шагам.
+
+    page_img — что открыть в Photoshop. Обычно это чистая копия из
+    контейнера, а src_img остаётся именем: PSD, PNG и отчёт называются по
+    странице главы, а не по временной копии.
+
+    erase_ids — что Photoshop всё-таки стирает сам. Пустой список значит
+    «всё стёрто до меня», None — стирать здесь всё, как было раньше.
+    """
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(src_img))[0]
     psd = os.path.join(out_dir, stem + ".psd")
@@ -128,8 +177,9 @@ def render(analysis: dict, src_img: str, out_dir: str, font: str = DEFAULT_FONT,
     rep = os.path.join(out_dir, stem + ".report.json")
 
     jsx = jsxgen.build(
-        src_img=_fwd(src_img), psd_out=_fwd(psd), png_out=_fwd(png), report_out=_fwd(rep),
+        src_img=_fwd(page_img or src_img), psd_out=_fwd(psd), png_out=_fwd(png), report_out=_fwd(rep),
         regions=analysis["regions"], font=font, erase_only=erase_only,
+        erase_ids=erase_ids,
     )
     result = run_jsx(jsx)
 

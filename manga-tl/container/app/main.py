@@ -4,12 +4,14 @@
 модель на хосте, вёрстку — Photoshop. Здесь только «глаза» пайплайна.
 """
 import io
+import json
 import os
 from typing import List
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, Form, UploadFile, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from . import detect as _morph
@@ -22,6 +24,7 @@ if _nn.available():
     detect, DETECTOR_NAME = _nn.detect, _nn.DETECTOR_NAME
 else:
     detect, DETECTOR_NAME = _morph.detect, _morph.DETECTOR_NAME
+from . import inpaint as _inpaint
 from .kinds import revise_kinds
 from .ocr import read_regions, OCR_NAME
 from .schema import PageAnalysis
@@ -67,6 +70,7 @@ def health():
         "ocr": OCR_NAME,
         "tesseract": str(pytesseract.get_tesseract_version()),
         "pages_root": PAGES_ROOT,
+        "inpaint": _inpaint.INPAINT_NAME if _inpaint.available() else "none",
         "pages_mounted": os.path.isdir(PAGES_ROOT),
     }
 
@@ -98,6 +102,41 @@ def analyze_path(req: PathReq):
     if img is None:
         raise HTTPException(400, "Не удалось декодировать: %s" % req.path)
     return _analyze(img, os.path.basename(full), req.lang)
+
+
+@app.post("/inpaint")
+async def inpaint_page(file: UploadFile = File(...), regions: str = Form("[]"),
+                       force: bool = Form(False)):
+    """Страница с уже стёртым текстом, PNG.
+
+    Регионы приходят с хоста вместе с переводами: стирается только то, что
+    будет заменено. Отдаём картинку, а не пути, — контейнеру незачем знать
+    про каталог результатов, а хосту про устройство контейнера.
+    """
+    raw = await file.read()
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "Не удалось прочитать изображение")
+    try:
+        rs = json.loads(regions)
+    except ValueError as e:
+        raise HTTPException(400, "regions не разобрался как JSON: %s" % e)
+
+    res = _inpaint.erase(img, rs, force=force)
+    ok, buf = cv2.imencode(".png", res["image"])
+    if not ok:
+        raise HTTPException(500, "Не удалось закодировать PNG")
+
+    return Response(
+        content=buf.tobytes(), media_type="image/png",
+        headers={
+            # Заголовком, а не телом: тело — сама картинка.
+            "X-Erased-Flat": str(res["flat"]),
+            "X-Erased-Art": str(res["art"]),
+            "X-Inpaint-Passes": str(res["passes"]),
+            "X-Left-To-Photoshop": ",".join(res["left"]),
+        },
+    )
 
 
 @app.get("/pages")

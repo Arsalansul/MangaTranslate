@@ -57,6 +57,9 @@ STITCH_ALIGN = 0.6      # какая доля высоты обязана сов
 MIN_ORPHAN_PX = 120     # минимум чернил для региона, не подтверждённого боксом
 FLAT_BG_STD = 18.0      # разброс фона под текстом: ниже — ровная подложка
 PAD = 6                 # запас маски вокруг bbox: заливать надо шире глифов
+LINE_TOL = 0.15         # допуск вокруг бокса строки в долях её высоты
+LINE_MIN_RATIO = 0.4    # строка ниже этой доли медианы — не строка набора
+LINE_MAX_RATIO = 2.5    # а выше — нарисованный звук, наехавший на рамку
 SAFE_TOL = 55           # допуск яркости, в пределах которого пиксель считается подложкой
 SAFE_STEP = 4           # шаг, которым рамка растёт в стороны
 SAFE_CLEAR = 0.97       # какая доля прирастающей полосы обязана быть подложкой
@@ -346,6 +349,65 @@ def _mask_poly(mask: np.ndarray, x: int, y: int, x2: int, y2: int,
     return [[int(p[0][0]) + mx, int(p[0][1]) + my] for p in approx]
 
 
+def _mask_polys(mask: np.ndarray, group: List[Box], x: int, y: int, x2: int, y2: int,
+                scale: int) -> List[List[List[int]]]:
+    """Контуры стирания по каждому куску текста отдельно.
+
+    _mask_poly отдаёт один контур и сдаётся, когда текст распался на
+    несколько, — а распадается он почти всегда, стоит строкам разойтись
+    шире дилатации. Пока стирал Photoshop, ценой был прямоугольник вместо
+    силуэта; теперь стирает модель, и прямоугольник означает съеденный
+    рисунок вокруг букв.
+
+    Заодно отсюда выбрасываются чужие глифы. Рамка региона — это габарит
+    его строк, и в неё попадает всё, что рядом нарисовано: угол балуна,
+    штриховка, нарисованный звук из той же панели. Стирать это нельзя, а
+    отличить просто — по строкам: чернила региона лежат в его строках, а
+    не между ними.
+
+    Сами строки тоже проверяются. Группировка изредка пришивает к реплике
+    обломок нарисованного звука, наехавшего на её рамку, — и тогда звук
+    приезжает в регион на правах строки. Выдаёт его рост: строки одного
+    набора одной высоты, а звук рисуется в разы крупнее.
+    """
+    H, W = mask.shape
+    mx, my = max(0, x - PAD), max(0, y - PAD)
+    mx2, my2 = min(W, x2 + PAD), min(H, y2 + PAD)
+    crop = mask[my:my2, mx:mx2]
+    if crop.size == 0:
+        return []
+
+    binary = (crop > 0).astype(np.uint8)
+    _, labels = cv2.connectedComponents(binary, connectivity=8)
+
+    # Строки региона с небольшим допуском: бокс строки обводит тело глифов,
+    # а хвосты запятых и точки над i выступают за него.
+    rows = np.zeros_like(binary)
+    med = float(np.median([b[3] for b in group]))
+    own_lines = [b for b in group
+                 if LINE_MIN_RATIO * med <= b[3] <= LINE_MAX_RATIO * med] or list(group)
+    for bx, by, bw, bh in own_lines:
+        tol = max(2, int(bh * LINE_TOL))
+        cv2.rectangle(rows,
+                      (bx - mx - tol, by - my - tol),
+                      (bx - mx + bw + tol, by - my + bh + tol), 1, -1)
+
+    own = set(np.unique(labels[(rows > 0) & (binary > 0)])) - {0}
+    keep = np.isin(labels, list(own)).astype(np.uint8) if own else binary
+
+    d = max(3, int(scale * DILATE_FACTOR) | 1)
+    grown = cv2.dilate(keep * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d, d)))
+    contours, _ = cv2.findContours(grown, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    polys = []
+    for c in contours:
+        approx = cv2.approxPolyDP(c, 2.0, True)
+        if len(approx) < 3:
+            continue
+        polys.append([[int(p[0][0]) + mx, int(p[0][1]) + my] for p in approx])
+    return polys
+
+
 def _safe_box(gray: np.ndarray, mask: np.ndarray, x: int, y: int, x2: int, y2: int,
               bg_val: int, line_h: int) -> Optional[List[int]]:
     """Свободное поле вокруг текста: куда можно верстать перевод.
@@ -519,6 +581,7 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
         mx, my = max(0, x - PAD), max(0, y - PAD)
         mx2, my2 = min(W, x2 + PAD), min(H, y2 + PAD)
         poly = [[mx, my], [mx2, my], [mx2, my2], [mx, my2]]
+    polys = _mask_polys(mask, group, x, y, x2, y2, local)
 
     # На рисунке свободного поля нет: там любое расширение лезет на арт.
     safe = None if on_art else _safe_box(gray, mask, x, y, x2, y2, bg_val, line_h)
@@ -528,6 +591,7 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
         bbox=[x, y, w, h],
         safe_box=safe or [],
         mask_poly=poly,
+        mask_polys=polys,
         angle=0.0,
         lines=len(group),
         font_px=font_px,

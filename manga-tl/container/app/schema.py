@@ -22,6 +22,13 @@ class Region(BaseModel):
         description="Контур для стирания. Уже расширен (dilate) относительно bbox: "
                     "заливать надо с запасом, иначе остаются хвосты от глифов.",
     )
+    mask_polys: List[List[List[int]]] = Field(
+        default_factory=list,
+        description="Тот же контур, но по каждому куску текста отдельно, и без "
+                    "чужих глифов. Стирать надо по нему: mask_poly вырождается "
+                    "в прямоугольник, стоит тексту распасться на части, и тогда "
+                    "вместе с буквами стирается рисунок вокруг.",
+    )
     angle: float = Field(0.0, description="Наклон строк в градусах, по часовой")
     safe_box: List[int] = Field(
         default_factory=list,

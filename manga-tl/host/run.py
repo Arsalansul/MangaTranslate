@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge
@@ -123,8 +124,27 @@ def process(name, full_dir, out_dir, args, engine, glossary):
         row["note"] = "только анализ"
         return row
 
-    # --- стирание и вёрстка -------------------------------------------
-    res = bridge.render(analysis, src, out_dir, font=args.font, erase_only=args.erase_only)
+    # --- стирание -----------------------------------------------------
+    # Стирает контейнер: ровный фон заливкой, текст поверх рисунка — моделью.
+    # Photoshop раньше делал то же Content-Aware Fill'ом, но тот собирает
+    # заплатку из кусков страницы, а страница в этот момент ещё в тексте.
+    page, erase_ids = src, None
+    try:
+        cl = bridge.clean(analysis, src, os.path.join(out_dir, stem + ".clean.png"),
+                          force=args.erase_only)
+        page, erase_ids = cl["path"], cl["left"]
+        print("       стёрто: ровных %d, поверх арта %d (проходов %d)%s"
+              % (cl["flat"], cl["art"], cl["passes"],
+                 ", Photoshop'у осталось %d" % len(cl["left"]) if cl["left"] else ""))
+    except urllib.error.URLError as e:
+        # Старый контейнер без /inpaint или он не ответил — стирает Photoshop,
+        # как до сих пор. Хуже, но страница всё равно выйдет.
+        print("       стирание в контейнере не вышло (%s), стирает Photoshop" % e)
+
+    # --- вёрстка -------------------------------------------------------
+    res = bridge.render(analysis, src, out_dir, font=args.font,
+                        erase_only=args.erase_only, page_img=page,
+                        erase_ids=erase_ids)
     fails = [s for s in res["report"] if not s["ok"]]
     row["ok"] = not fails
     if fails:
