@@ -52,13 +52,16 @@ DILATE_FACTOR = 0.35    # запас маски стирания в долях �
 MAX_POLY_PTS = 200      # длиннее полигон Photoshop выделяет заметно медленнее
 ASSIGN_COVER = 0.6      # какая доля строки должна лежать в боксе, чтобы считать её его
 COL_GAP = 0.45          # ширина пустого коридора между колонками в долях высоты глифа
+STITCH_GAP = 0.6        # разрыв, который сшивается в строку, в долях её высоты
+STITCH_ALIGN = 0.6      # какая доля высоты обязана совпасть, чтобы счесть строки одной
 MIN_ORPHAN_PX = 120     # минимум чернил для региона, не подтверждённого боксом
 FLAT_BG_STD = 18.0      # разброс фона под текстом: ниже — ровная подложка
 PAD = 6                 # запас маски вокруг bbox: заливать надо шире глифов
 SAFE_TOL = 55           # допуск яркости, в пределах которого пиксель считается подложкой
-SAFE_INSET = 0.74       # доля габарита пузыря, в которую вписывается прямоугольник текста
-SAFE_ESCAPE = 0.8       # заливка шире этой доли страницы — значит, утекла наружу
-SAFE_INSIDE = 0.93      # какая доля поля обязана лежать на подложке
+SAFE_STEP = 4           # шаг, которым рамка растёт в стороны
+SAFE_CLEAR = 0.97       # какая доля прирастающей полосы обязана быть подложкой
+SAFE_MARGIN = 0.02      # поля страницы, в которые вёрстка не заходит
+SAFE_PAD = 0.2          # отступ от препятствия, в долях высоты строки
 SAFE_GROW = 2.0         # шире этого рамку текста не раздуваем
 SAFE_LINES = 2.5        # и не выше, чем на столько лишних строк
 
@@ -210,6 +213,46 @@ def _assign(lines: List[Box],
     return [(g, blks[i]) for i, g in buckets.items()], orphans
 
 
+def _stitch(boxes: List[Box]) -> List[Box]:
+    """Сшивает обрывки одной строки, разъехавшиеся по межсловному пробелу.
+
+    Глифы смыкаются в строку морфологией с ядром в долях медианной высоты
+    глифа по всей странице. На манге страница набрана одним кеглем, и мерка
+    годится; на ленте вебтуна в шесть тысяч пикселей кегли разные, медиана
+    уезжает к мелким, и у крупного капшена ядро оказывается уже пробела.
+    «МЕНЯ ЗОВУТ ЭНКРИД» распадалось на «МЕНЯ» и «ЗОВУТ ЭНКРИД» — два региона,
+    каждый со своим переводом, и собрать из них фразу уже нельзя.
+
+    Мерка здесь местная: разрыв сравнивается с высотой самих обрывков, а не
+    страницы. Сшиваются только строки, не попавшие ни в один бокс модели:
+    внутри бокса строки собираются по нему, а лишняя склейка через колонку
+    помешала бы развести слипшиеся балуны.
+    """
+    out = sorted(boxes, key=lambda b: b[0])
+    joined = True
+    while joined:
+        joined = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = out[i], out[j]
+                h = min(a[3], b[3])
+                if not h or float(h) / max(a[3], b[3]) < STITCH_ALIGN:
+                    continue
+                over = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+                gap = max(a[0], b[0]) - min(a[0] + a[2], b[0] + b[2])
+                if over < h * STITCH_ALIGN or gap > h * STITCH_GAP:
+                    continue
+                x, y = min(a[0], b[0]), min(a[1], b[1])
+                out[i] = (x, y, max(a[0] + a[2], b[0] + b[2]) - x,
+                          max(a[1] + a[3], b[1] + b[3]) - y)
+                del out[j]
+                joined = True
+                break
+            if joined:
+                break
+    return out
+
+
 def _split_columns(group: List[Box], scale: int) -> List[List[Box]]:
     """Режет блок на колонки по пустому вертикальному коридору.
 
@@ -304,76 +347,74 @@ def _mask_poly(mask: np.ndarray, x: int, y: int, x2: int, y2: int,
 
 
 def _safe_box(gray: np.ndarray, mask: np.ndarray, x: int, y: int, x2: int, y2: int,
-              bg_val: int, blk: Optional[Box], line_h: int) -> Optional[List[int]]:
-    """Свободное поле балуна: куда можно верстать перевод.
+              bg_val: int, line_h: int) -> Optional[List[int]]:
+    """Свободное поле вокруг текста: куда можно верстать перевод.
 
     Рамка исходного текста снята впритык, а перевод длиннее оригинала —
     в неё он влезает только нечитаемым кеглем. Настоящий предел вёрстки не
-    бывший текст, а стенка пузыря.
+    бывший текст, а первое препятствие вокруг: стенка пузыря, край панели,
+    соседний рисунок.
 
-    Подложка ищется связной областью близкой яркости. Буквы её дырявят, из-за
-    чего область вокруг текста распалась бы на куски, поэтому маска глифов
-    заранее объявляется подложкой. Найденный габарит ужимается: пузырь обычно
-    эллипс, и прямоугольник по его габаритам вылезет за контур углами.
+    Поэтому рамка не вычисляется, а выращивается: по очереди с каждой стороны,
+    пока прирастающая полоса почти целиком лежит на подложке. Буквы её дырявят,
+    из-за чего рост остановился бы на первой же строке, поэтому маска глифов
+    заранее объявляется подложкой.
 
-    Заливка может утечь наружу — через разрыв контура или потому, что поле
-    страницы такое же белое. Тогда безопасной площади нет: лучше верстать
-    тесно, чем поверх рисунка.
+    Рост честен и там, где границы нет вовсе. Прежний вариант искал связную
+    область фона и вписывался в её габарит; на вебтуне белый пузырь сливается
+    с белым полем страницы, а капшен и вовсе стоит на голом фоне — область
+    разливалась на всю ленту, и проверка отбрасывала её целиком, хотя места
+    там как раз вдоволь. Рост же упирается в обводку пузыря там, где она есть,
+    и в поля страницы там, где её нет.
     """
     H, W = gray.shape
     glyph = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2) > 0
     flat = ((np.abs(gray.astype(np.int16) - int(bg_val)) <= SAFE_TOL) | glyph)
 
-    n, lab, stats, _ = cv2.connectedComponentsWithStats(flat.astype(np.uint8), 8)
-    cx, cy = (x + x2) // 2, (y + y2) // 2
-    lb = int(lab[min(cy, H - 1), min(cx, W - 1)])
-    if n < 2 or lb == 0:
-        return None
-
-    bx, by, bw, bh = (int(v) for v in stats[lb, :4])
-    if bw > W * SAFE_ESCAPE or bh > H * SAFE_ESCAPE:
-        return None
-    # Область обязана накрывать текст целиком: иначе поймали не подложку.
-    if bx > x or by > y or bx + bw < x2 or by + bh < y2:
-        return None
+    # Потолок роста — только поля страницы. Бокс блока от модели, без которого
+    # заливка не обходилась, здесь мешает: он снят по тексту, а не по пузырю,
+    # и у половины реплик запирал рост в ноль. Препятствия рост видит сам.
+    m = int(round(W * SAFE_MARGIN))
+    lo_x, lo_y, hi_x, hi_y = m, m, W - m, H - m
 
     # Поле нужно не «побольше», а ровно настолько, насколько перевод длиннее:
     # по ширине — чтобы слово не рвалось переносом, по высоте — на пару лишних
-    # строк. Всё сверх этого уже не запас, а выход за пузырь там, где заливка
-    # ошиблась.
+    # строк. Всё сверх этого уже не запас, а лишний повод уехать не туда.
     w, h = x2 - x, y2 - y
-    sw = min(bw * SAFE_INSET, w * SAFE_GROW)
-    sh = min(bh * SAFE_INSET, h + SAFE_LINES * max(line_h, 1))
-    sx = (bx + bw / 2.0) - sw / 2.0
-    sy = (by + bh / 2.0) - sh / 2.0
-    ax, ay, ax2, ay2 = int(sx), int(sy), int(sx + sw), int(sy + sh)
+    max_w, max_h = w * SAFE_GROW, h + SAFE_LINES * max(line_h, 1)
 
-    # Заливка не видит границы там, где пузырь того же цвета, что и поле
-    # страницы: на разомкнутом контуре она уходит в панель целиком. Бокс
-    # блока от модели такой ошибки не делает и служит потолком.
-    if blk is not None:
-        ax, ay = max(ax, blk[0]), max(ay, blk[1])
-        ax2, ay2 = min(ax2, blk[0] + blk[2]), min(ay2, blk[1] + blk[3])
+    box = [x, y, x2, y2]
+    room = [True, True, True, True]
+    while any(room):
+        for side in range(4):
+            if not room[side]:
+                continue
+            a, b, c, d = box
+            if side == 0:
+                n = max(lo_x, a - SAFE_STEP)
+                ok = n < a and c - n <= max_w and flat[b:d, n:a].mean() >= SAFE_CLEAR
+            elif side == 1:
+                n = max(lo_y, b - SAFE_STEP)
+                ok = n < b and d - n <= max_h and flat[n:b, a:c].mean() >= SAFE_CLEAR
+            elif side == 2:
+                n = min(hi_x, c + SAFE_STEP)
+                ok = n > c and n - a <= max_w and flat[b:d, c:n].mean() >= SAFE_CLEAR
+            else:
+                n = min(hi_y, d + SAFE_STEP)
+                ok = n > d and n - b <= max_h and flat[d:n, a:c].mean() >= SAFE_CLEAR
+            if ok:
+                box[side] = n
+            room[side] = ok
 
-    # Хуже, чем было, быть не должно: рамка текста всегда внутри.
-    ax, ay = max(0, min(ax, x)), max(0, min(ay, y))
-    ax2, ay2 = min(W, max(ax2, x2)), min(H, max(ay2, y2))
-
-    # Заливка могла утечь наружу: у пузыря того же цвета, что поле страницы,
-    # или с разомкнутым контуром связная область уходит в панель. Поэтому
-    # поле принимается, только если почти целиком лежит на подложке; иначе
-    # стягивается к рамке текста, пока не начнёт.
-    comp = lab == lb
-    for t in (1.0, 0.75, 0.5, 0.25):
-        bx0 = int(x + (ax - x) * t)
-        by0 = int(y + (ay - y) * t)
-        bx1 = int(x2 + (ax2 - x2) * t)
-        by1 = int(y2 + (ay2 - y2) * t)
-        if bx1 <= bx0 or by1 <= by0:
-            continue
-        if comp[by0:by1, bx0:bx1].mean() >= SAFE_INSIDE:
-            return [bx0, by0, bx1 - bx0, by1 - by0]
-    return None
+    # Рост останавливается вплотную к препятствию, а текст, прижатый к обводке,
+    # читается как ошибка вёрстки. Отступ отсчитывается от строки, но рамку
+    # оригинала не режет: хуже, чем было, быть не должно.
+    pad = max(2, int(round(max(line_h, 1) * SAFE_PAD)))
+    ax, ay = min(x, box[0] + pad), min(y, box[1] + pad)
+    ax2, ay2 = max(x2, box[2] - pad), max(y2, box[3] - pad)
+    if ax2 - ax <= w and ay2 - ay <= h:
+        return None
+    return [ax, ay, ax2 - ax, ay2 - ay]
 
 
 def _deoverlap(regions: Sequence[Region]) -> None:
@@ -480,7 +521,7 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
         poly = [[mx, my], [mx2, my], [mx2, my2], [mx, my2]]
 
     # На рисунке свободного поля нет: там любое расширение лезет на арт.
-    safe = None if on_art else _safe_box(gray, mask, x, y, x2, y2, bg_val, blk, line_h)
+    safe = None if on_art else _safe_box(gray, mask, x, y, x2, y2, bg_val, line_h)
 
     return Region(
         id="r%03d" % idx,
@@ -507,7 +548,7 @@ def detect(img_bgr: np.ndarray) -> List[Region]:
 
     in_blocks, orphans = _assign(lines, blks)
     groups = [(c, blk) for g, blk in in_blocks for c in _split_columns(g, scale)]
-    groups += [(g, None) for g in _group_lines(orphans)]
+    groups += [(g, None) for g in _group_lines(_stitch(orphans))]
     groups.sort(key=lambda gb: min(p[1] for p in gb[0]))
 
     regions: List[Region] = []
