@@ -38,17 +38,22 @@ def _region_literal(r: Dict[str, Any]) -> str:
     poly = r.get("mask_poly") or [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
     poly_js = "[" + ",".join("[%d,%d]" % (p[0], p[1]) for p in poly) + "]"
     fg = r.get("fg") or [0, 0, 0]
+    bg = r.get("bg") or [255, 255, 255]
+    # Стираем по bbox/полигону, а верстаем по safe_box: стереть надо ровно
+    # бывший текст, а поставить — с запасом, который даёт балун.
+    sx, sy, sw, sh = r.get("safe_box") or [x, y, w, h]
     return (
-        "{id:%s,x:%d,y:%d,w:%d,h:%d,poly:%s,txt:%s,size:%d,lead:%d,"
-        "kind:%s,onArt:%s,fg:[%d,%d,%d]}"
+        "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
+        "size:%d,lead:%d,kind:%s,onArt:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
-            esc(r["id"]), x, y, w, h, poly_js,
+            esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
             int(r.get("font_px") or 24),
             int(r.get("line_h_px") or 0),
             esc(r.get("kind") or "unknown"),
             "true" if r.get("on_art") else "false",
             fg[0], fg[1], fg[2],
+            bg[0], bg[1], bg[2],
         )
     )
 
@@ -70,11 +75,23 @@ function jstr(s) {
   return o + QU;
 }
 var R = [];
+// Пункты на пиксель. Координаты слоя Photoshop принимает в пикселях, а
+// размеры текста — кегль, интерлиньяж, рамку абзаца — в пунктах, и делает это
+// молча: записанное значение читается обратно как есть. На странице 96 PPI
+// рамка выходила на треть шире заказанной, а кегль на треть крупнее, отчего
+// текст лез за балун. Всё, что идёт в textItem, кроме position, множится на K.
+var K = 1.0;
 function step(name, fn) {
   try { var v = fn(); R.push('{"step":' + jstr(name) + ',"ok":true,"info":' + jstr(v) + '}'); return v; }
   catch (e) { R.push('{"step":' + jstr(name) + ',"ok":false,"info":' + jstr(e) + '}'); return null; }
 }
 function writeFile(p, txt) { var f = new File(p); f.encoding = 'UTF-8'; f.open('w'); f.write(txt); f.close(); }
+
+function solidFill(rgb) {
+  var c = new SolidColor();
+  c.rgb.red = rgb[0]; c.rgb.green = rgb[1]; c.rgb.blue = rgb[2];
+  doc.selection.fill(c, ColorBlendMode.NORMAL, 100, false);
+}
 
 function contentAwareFill() {
   var d = new ActionDescriptor();
@@ -84,21 +101,71 @@ function contentAwareFill() {
   executeAction(charIDToTypeID('Fl  '), d, DialogModes.NO);
 }
 
+// Язык текстового слоя: от него зависит словарь переносов, а без переносов
+// длинное слово не разбивается и торчит за балун. В DOM ExtendScript русского
+// языка нет вовсе (Language.RUSSIAN отсутствует), поэтому только Action Manager.
+//
+// Идентификатор именно russianLanguage. На 'russian' Photoshop не ругается —
+// он ставит английский, то есть ровно противоположное просимому. Умолчание
+// зависит от локали интерфейса, так что язык задаётся явно и сверяется.
+function setLanguage(lang) {
+  var ref = new ActionReference();
+  ref.putProperty(charIDToTypeID('Prpr'), charIDToTypeID('TxtS'));
+  ref.putEnumerated(charIDToTypeID('TxLr'), charIDToTypeID('Ordn'), charIDToTypeID('Trgt'));
+  var d = new ActionDescriptor();
+  d.putReference(charIDToTypeID('null'), ref);
+  var style = new ActionDescriptor();
+  style.putEnumerated(stringIDToTypeID('textLanguage'),
+                      stringIDToTypeID('textLanguage'), stringIDToTypeID(lang));
+  d.putObject(charIDToTypeID('T   '), charIDToTypeID('TxtS'), style);
+  executeAction(charIDToTypeID('setd'), d, DialogModes.NO);
+}
+
+// Проверяем, что язык действительно встал: на неизвестный идентификатор
+// Photoshop не ругается, а тихо оставляет прежний.
+function languageOf() {
+  // Читать стиль через Prpr/TxtS нельзя — Photoshop отвечает, что команда
+  // недоступна. Язык лежит в textKey, в первом отрезке стиля.
+  var ref = new ActionReference();
+  ref.putProperty(stringIDToTypeID('property'), stringIDToTypeID('textKey'));
+  ref.putEnumerated(stringIDToTypeID('layer'), stringIDToTypeID('ordinal'),
+                    stringIDToTypeID('targetEnum'));
+  var tk = executeActionGet(ref).getObjectValue(stringIDToTypeID('textKey'));
+  var st = tk.getList(stringIDToTypeID('textStyleRange'))
+             .getObjectValue(0).getObjectValue(stringIDToTypeID('textStyle'));
+  var k = stringIDToTypeID('textLanguage');
+  return st.hasKey(k) ? typeIDToStringID(st.getEnumerationValue(k)) : 'unset';
+}
+
 // Подгон кегля. Ключевой момент: у абзацного текста лишнее просто
 // скрывается, и bounds покажет высоту рамки, а не текста. Поэтому меряем
 // в заведомо высокой рамке, и только потом сажаем в настоящую.
+//
+// Ширину проверяем наравне с высотой, и это не перестраховка: слово, которое
+// не влезает в строку целиком и не переносится, Photoshop не ужимает, а
+// выносит за рамку. По высоте всё сходится, а на странице текст лежит поверх
+// контура балуна. В русском такие слова длиннее и встречаются чаще.
+//
+// Но сравнивать впритык нельзя: у выключенного по центру абзаца габарит
+// глифов и так на пару пикселей гуляет вокруг рамки от кернинга и округления.
+// Строгое сравнение заваливало подгон на ровном месте и гнало кегль в минимум,
+// поэтому допуск — доля кегля: торчащее слово шире него на порядок.
 function fitText(tl, boxW, boxH, maxSize, minSize) {
   var ti = tl.textItem;
-  ti.width = boxW;
-  ti.height = boxH * 6;
+  ti.width = boxW * K;
+  ti.height = boxH * 6 * K;
   for (var s = maxSize; s >= minSize; s--) {
-    ti.size = s;
-    ti.leading = Math.round(s * 1.18);
+    ti.size = s * K;
+    ti.leading = Math.round(s * 1.18) * K;
     var b = tl.bounds;
     var th = parseFloat(b[3]) - parseFloat(b[1]);
-    if (th <= boxH) return { size: s, textH: th };
+    var tw = parseFloat(b[2]) - parseFloat(b[0]);
+    if (th <= boxH && tw <= boxW + Math.max(2, Math.round(s * 0.3))) {
+      return { size: s, textH: th };
+    }
   }
-  ti.size = minSize;
+  ti.size = minSize * K;
+  ti.leading = Math.round(minSize * 1.18) * K;
   return { size: minSize, textH: -1 };
 }
 """
@@ -123,12 +190,14 @@ writeFile(REPORT, '[' + R.join(',') + ']');
 
 def build(src_img: str, psd_out: str, png_out: str, report_out: str,
           regions: List[Dict[str, Any]], font: str,
-          min_size: int = 9, erase_only: bool = False) -> str:
+          min_size: int = 9, erase_only: bool = False,
+          lang: str = "russianLanguage") -> str:
     """Собирает полный .jsx: стереть все регионы, затем сверстать переводы."""
     parts = [HEADER]
     parts.append("var SRC = %s, PSD = %s, PNG = %s, REPORT = %s, FONT = %s;"
                  % (esc(src_img), esc(psd_out), esc(png_out), esc(report_out), esc(font)))
-    parts.append("var FONT_OK = false;")
+    parts.append("var FONT_OK = false, ERASE_ALL = %s, LANG = %s;"
+                 % ("true" if erase_only else "false", esc(lang)))
     parts.append("var REGIONS = [" + ",".join(_region_literal(r) for r in regions) + "];")
     parts.append("""
 var doc = null;
@@ -136,7 +205,8 @@ step('setup', function () {
   app.preferences.rulerUnits = Units.PIXELS;
   app.preferences.typeUnits = TypeUnits.PIXELS;
   doc = app.open(new File(SRC));
-  return doc.width + 'x' + doc.height;
+  K = 72.0 / doc.resolution;
+  return doc.width + 'x' + doc.height + ' @' + doc.resolution + ' ppi';
 });
 
 // Photoshop на неизвестное имя шрифта не ругается, а молча подставляет
@@ -157,18 +227,25 @@ step('font', function () {
 // Проход 1: стираем оригинал. Все стирания идут по фоновому слою,
 // до того как появятся текстовые слои, — иначе заливка возьмёт их в расчёт.
 step('erase_all', function () {
-  var done = 0;
+  var done = 0, kept = 0;
   doc.activeLayer = doc.layers[doc.layers.length - 1];
   for (var i = 0; i < REGIONS.length; i++) {
     var r = REGIONS[i];
+    // Регион без перевода не трогаем: заливка без замены только портит
+    // рисунок. Так остаются нетронутыми звуки и мусорные находки.
+    if (!ERASE_ALL && (!r.txt || r.txt.length === 0)) { kept++; continue; }
     try {
       doc.selection.select(r.poly);
-      contentAwareFill();
+      // Content-Aware Fill достраивает выделение по остальной странице, а
+      // страница в этот момент ещё полна текста — в ровный пузырь он
+      // приносит буквы из соседних. Там, где фон ровный, нужна не догадка,
+      // а просто его цвет; догадка остаётся для текста поверх рисунка.
+      if (r.onArt) { contentAwareFill(); } else { solidFill(r.bg); }
       done++;
     } catch (e) { R.push('{"step":"erase:' + r.id + '","ok":false,"info":' + jstr(e) + '}'); }
   }
   try { doc.selection.deselect(); } catch (e) {}
-  return done + '/' + REGIONS.length + ' erased';
+  return done + ' erased, ' + kept + ' kept of ' + REGIONS.length;
 });
 """)
 
@@ -177,7 +254,7 @@ step('erase_all', function () {
 // Проход 2: вёрстка переводов.
 step('typeset_all', function () {
   if (!FONT_OK) return 'skipped: font not installed';
-  var placed = 0, overflow = [];
+  var placed = 0, overflow = [], lang = '';
   for (var i = 0; i < REGIONS.length; i++) {
     var r = REGIONS[i];
     if (!r.txt || r.txt.length === 0) continue;
@@ -191,25 +268,28 @@ step('typeset_all', function () {
       ti.font = FONT;
       ti.justification = Justification.CENTER;
       ti.hyphenation = true;
+      try { setLanguage(LANG); if (!lang) lang = languageOf(); }
+      catch (e) { if (!lang) lang = 'failed: ' + e; }
       var col = new SolidColor();
       col.rgb.red = r.fg[0]; col.rgb.green = r.fg[1]; col.rgb.blue = r.fg[2];
       ti.color = col;
-      ti.position = [r.x, r.y];
+      ti.position = [r.sx, r.sy];
 
-      var startSize = Math.max(MIN_SIZE + 1, Math.round(r.size * 1.25));
-      var fit = fitText(tl, r.w, r.h, startSize, MIN_SIZE);
+      var startSize = Math.max(MIN_SIZE + 1, Math.round(r.size * 1.1));
+      var fit = fitText(tl, r.sw, r.sh, startSize, MIN_SIZE);
       if (fit.textH < 0) overflow.push(r.id);
 
       // Ставим настоящую рамку и центрируем текст по вертикали.
-      ti.height = r.h;
+      ti.height = r.sh * K;
       var b = tl.bounds;
       var th = parseFloat(b[3]) - parseFloat(b[1]);
-      var dy = Math.max(0, Math.round((r.h - th) / 2));
-      ti.position = [r.x, r.y + dy];
+      var dy = Math.max(0, Math.round((r.sh - th) / 2));
+      ti.position = [r.sx, r.sy + dy];
       placed++;
     } catch (e) { R.push('{"step":"text:' + r.id + '","ok":false,"info":' + jstr(e) + '}'); }
   }
-  return placed + ' placed; overflow=' + (overflow.length ? overflow.join(',') : 'none');
+  return placed + ' placed; lang=' + (lang || 'none')
+       + '; overflow=' + (overflow.length ? overflow.join(',') : 'none');
 });
 """)
     parts.insert(1, "var MIN_SIZE = %d;" % min_size)
