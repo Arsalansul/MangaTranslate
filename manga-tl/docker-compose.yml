@@ -5,11 +5,13 @@ services:
     ports:
       - "8765:8000"
     volumes:
-      # Каталог с главами. Только чтение: контейнер не должен трогать исходники.
-      - "${PAGES_HOST:-E:/mwx-json/downloads/mangabuff}:/pages:ro"
       # Веса детектора. Отдельным томом, чтобы не раздувать образ и не пересобирать его из-за модели.
       - "./container/models:/models:ro"
     environment:
-      PAGES_ROOT: /pages
       MODELS_DIR: /models
     restart: unless-stopped
+
+# Каталог с главами сюда не монтируется: страницы уходят в контейнер файлом
+# по HTTP, и главу можно взять из любой папки на диске. Эндпоинт /analyze_path
+# в контейнере остался — если он кому-то понадобится, том добавляется сюда:
+#   - "${PAGES_HOST}:/pages:ro"

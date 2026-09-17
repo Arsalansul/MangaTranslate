@@ -10,11 +10,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge
 
-# Тестовая глава внутри смонтированного /pages.
+# Тестовая страница. Лежит где угодно: контейнер получает её файлом.
 CHAPTER = "Вечно регрессирующий рыцарь _ A knight who lives for one day/Том 1_ ._ Глава 0"
 PAGE = "0010.jpeg"
 
-HOST_ROOT = os.environ.get("PAGES_HOST", "E:/mwx-json/downloads/mangabuff")
+HOST_ROOT = os.environ.get("MANGA_TL_PAGES", "E:/mwx-json/downloads/mangabuff")
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out")
 
 
@@ -25,16 +25,17 @@ def main():
     try:
         h = bridge.health()
         print("      ", json.dumps(h, ensure_ascii=False))
-        if not h.get("pages_mounted"):
-            print("       ПРОБЛЕМА: /pages не смонтирован")
-            ok = False
     except Exception as e:
         print("       НЕДОСТУПЕН:", e)
         return 1
 
+    src = os.path.join(HOST_ROOT, CHAPTER, PAGE)
+    if not os.path.isfile(src):
+        print("       ПРОБЛЕМА: нет тестовой страницы:", src)
+        return 1
+
     print("[2/4] анализ страницы")
-    rel = CHAPTER + "/" + PAGE
-    a = bridge.analyze(rel)
+    a = bridge.analyze_file(src)
     print("       страница %sx%s, регионов: %d" % (a["width"], a["height"], len(a["regions"])))
     for w in a.get("warnings", []):
         print("       ! " + w)
@@ -67,10 +68,6 @@ def main():
         print("       ! подходящего региона нет, верстать нечего")
 
     print("[4/4] Photoshop: стирание + вёрстка")
-    src = os.path.join(HOST_ROOT, CHAPTER, PAGE)
-    if not os.path.isfile(src):
-        print("       ПРОБЛЕМА: нет файла на хосте:", src)
-        return 1
     res = bridge.render(a, src, OUT_DIR)
     for s in res["report"]:
         mark = "OK  " if s["ok"] else "FAIL"

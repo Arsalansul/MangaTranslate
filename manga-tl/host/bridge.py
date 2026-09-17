@@ -5,7 +5,7 @@ PowerShell для COM. Это осознанно: тяжёлые зависим�
 хост остаётся чистым.
 
 Поток данных:
-    контейнер /analyze_path -> PageAnalysis (JSON)
+    страница файлом в контейнер -> PageAnalysis (JSON)
     -> сюда вписываются переводы
     -> jsxgen собирает скрипт
     -> Photoshop стирает и верстает
@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -42,8 +43,41 @@ def health() -> dict:
 
 
 def analyze(page_rel: str, lang: str = "eng") -> dict:
-    """Просит контейнер найти и распознать текст на странице."""
+    """Страница по пути внутри смонтированного /pages.
+
+    Требует, чтобы каталог с главами был примонтирован к контейнеру. Для
+    прогона главы это лишнее условие — см. analyze_file.
+    """
     return _post("/analyze_path", {"path": page_rel, "lang": lang})
+
+
+def analyze_file(img_path: str, lang: str = "eng") -> dict:
+    """Страница, отправленная в контейнер файлом.
+
+    Так главу можно взять откуда угодно: контейнеру не нужно видеть её на
+    диске, и монтировать под неё том не приходится. Через localhost даже
+    двенадцатимегабайтная лента уходит за миллисекунды, так что выигрыш
+    от чтения с диска мнимый, а неудобство от монтирования — настоящее.
+    """
+    boundary = "----manga-tl-" + os.urandom(8).hex()
+    with open(img_path, "rb") as f:
+        blob = f.read()
+
+    name = os.path.basename(img_path)
+    head = (
+        "--%s\r\n"
+        'Content-Disposition: form-data; name="file"; filename="%s"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n" % (boundary, name)
+    ).encode("utf-8")
+    body = head + blob + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+
+    req = urllib.request.Request(
+        CV_URL + "/analyze?lang=" + urllib.parse.quote(lang),
+        data=body,
+        headers={"Content-Type": "multipart/form-data; boundary=" + boundary},
+    )
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def _fwd(p: str) -> str:
@@ -109,13 +143,13 @@ def render(analysis: dict, src_img: str, out_dir: str, font: str = DEFAULT_FONT,
 def _cli():
     if len(sys.argv) < 2:
         print(__doc__)
-        print("команды: health | analyze <page> | pages [sub]")
+        print("команды: health | analyze <путь к картинке> | pages [sub]")
         return 1
     cmd = sys.argv[1]
     if cmd == "health":
         print(json.dumps(health(), ensure_ascii=False, indent=2))
     elif cmd == "analyze":
-        a = analyze(sys.argv[2])
+        a = analyze_file(sys.argv[2])
         print(json.dumps(a, ensure_ascii=False, indent=2))
     elif cmd == "pages":
         sub = sys.argv[2] if len(sys.argv) > 2 else ""

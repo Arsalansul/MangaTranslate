@@ -20,34 +20,10 @@ import translate
 
 EXTS = (".jpg", ".jpeg", ".png", ".webp")
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_PAGES_HOST = os.environ.get("PAGES_HOST", "E:/mwx-json/downloads/mangabuff")
 
 
 def _norm(p):
     return os.path.normpath(os.path.abspath(p)).replace(os.sep, "/")
-
-
-def resolve(target, pages_host):
-    """Отдаёт (путь на хосте, путь относительно PAGES_ROOT).
-
-    Контейнер видит главы по своему пути внутри /pages, Photoshop — по пути
-    на диске. Это один и тот же каталог, и вся навигация сводится к тому,
-    чтобы правильно посчитать между ними разницу.
-    """
-    root = _norm(pages_host)
-    if os.path.isabs(target):
-        full = _norm(target)
-        if not (full + "/").startswith(root + "/"):
-            raise SystemExit(
-                "Каталог вне смонтированного корня — контейнер его не увидит.\n"
-                "  каталог: %s\n  корень:  %s\n"
-                "Смонтируйте нужный корень: PAGES_HOST=... docker compose up -d"
-                % (full, root))
-        rel = full[len(root) + 1:]
-    else:
-        rel = target.replace(os.sep, "/").strip("/")
-        full = _norm(os.path.join(root, rel))
-    return full, rel
 
 
 def list_pages(full_dir):
@@ -70,10 +46,7 @@ def preflight(args):
     except Exception as e:
         raise SystemExit(
             "CV-контейнер недоступен по %s: %s\n"
-            'Поднять: PAGES_HOST="%s" docker compose up -d'
-            % (bridge.CV_URL, e, args.pages_host))
-    if not h.get("pages_mounted"):
-        raise SystemExit("Контейнер поднят, но /pages не смонтирован — см. docker-compose.yml")
+            "Поднять: docker compose up -d" % (bridge.CV_URL, e))
 
     needs_model = not (args.no_translate or args.erase_only or args.reuse)
     if needs_model and not args.api_key:
@@ -84,7 +57,7 @@ def preflight(args):
     return h
 
 
-def process(name, full_dir, rel_dir, out_dir, args, glossary):
+def process(name, full_dir, out_dir, args, glossary):
     src = os.path.join(full_dir, name)
     stem = os.path.splitext(name)[0]
     apath = os.path.join(out_dir, stem + ".analysis.json")
@@ -97,8 +70,7 @@ def process(name, full_dir, rel_dir, out_dir, args, glossary):
             analysis = json.load(f)
         row["note"] = "анализ из файла"
     if analysis is None:
-        page_rel = (rel_dir + "/" + name) if rel_dir else name
-        analysis = bridge.analyze(page_rel, lang=args.lang)
+        analysis = bridge.analyze_file(src, lang=args.lang)
 
     row["regions"] = len(analysis["regions"])
     for w in analysis.get("warnings", []):
@@ -142,11 +114,9 @@ def main():
     p = argparse.ArgumentParser(
         prog="run.py",
         description="Перевести главу: папка с исходниками -> папка с PSD и PNG.")
-    p.add_argument("target", help="папка главы; путь относительно PAGES_HOST "
-                                  "либо абсолютный внутри него")
+    p.add_argument("target", help="папка с картинками (или одна картинка); "
+                                  "любая папка на диске, класть никуда не надо")
     p.add_argument("--out", help="куда складывать результат (по умолчанию out/<имя папки>)")
-    p.add_argument("--pages-host", default=DEFAULT_PAGES_HOST,
-                   help="корень, смонтированный в контейнер как /pages")
     p.add_argument("--font", default=bridge.DEFAULT_FONT,
                    help="PostScript-имя шрифта; список: python host/fontcheck.py")
     p.add_argument("--lang", default="eng", help="язык OCR (eng)")
@@ -164,11 +134,12 @@ def main():
     p.add_argument("--start", help="начать с этой страницы, например 0007.jpeg")
     args = p.parse_args()
 
-    full_dir, rel_dir = resolve(args.target, args.pages_host)
+    full_dir = _norm(args.target)
+    if not os.path.exists(full_dir):
+        raise SystemExit("Нет такого пути: " + full_dir)
     if os.path.isfile(full_dir):
         # Одна страница — тот же прогон, просто список из одного имени.
-        full_dir, rel_dir, names = (os.path.dirname(full_dir), os.path.dirname(rel_dir),
-                                    [os.path.basename(full_dir)])
+        full_dir, names = os.path.dirname(full_dir), [os.path.basename(full_dir)]
     else:
         names = list_pages(full_dir)
 
@@ -196,7 +167,7 @@ def main():
     for i, name in enumerate(names, 1):
         print("[%d/%d] %s" % (i, len(names), name))
         try:
-            row = process(name, full_dir, rel_dir, out_dir, args, glossary)
+            row = process(name, full_dir, out_dir, args, glossary)
         except KeyboardInterrupt:
             print("\nпрервано; сделанное лежит в " + out_dir)
             break
