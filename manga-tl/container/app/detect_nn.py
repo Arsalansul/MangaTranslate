@@ -55,6 +55,12 @@ COL_GAP = 0.45          # ширина пустого коридора межд�
 MIN_ORPHAN_PX = 120     # минимум чернил для региона, не подтверждённого боксом
 FLAT_BG_STD = 18.0      # разброс фона под текстом: ниже — ровная подложка
 PAD = 6                 # запас маски вокруг bbox: заливать надо шире глифов
+SAFE_TOL = 55           # допуск яркости, в пределах которого пиксель считается подложкой
+SAFE_INSET = 0.74       # доля габарита пузыря, в которую вписывается прямоугольник текста
+SAFE_ESCAPE = 0.8       # заливка шире этой доли страницы — значит, утекла наружу
+SAFE_INSIDE = 0.93      # какая доля поля обязана лежать на подложке
+SAFE_GROW = 2.0         # шире этого рамку текста не раздуваем
+SAFE_LINES = 2.5        # и не выше, чем на столько лишних строк
 
 Box = Tuple[int, int, int, int]
 
@@ -182,8 +188,13 @@ def _cover(line: Box, blk: Box) -> float:
     return (ix * iy) / float(w * h)
 
 
-def _assign(lines: List[Box], blks: List[Box]) -> Tuple[List[List[Box]], List[Box]]:
-    """Раскладывает строки по балунам. Не попавшие никуда — отдельно."""
+def _assign(lines: List[Box],
+            blks: List[Box]) -> Tuple[List[Tuple[List[Box], Box]], List[Box]]:
+    """Раскладывает строки по балунам. Не попавшие никуда — отдельно.
+
+    Бокс балуна возвращается вместе со строками: он нужен дальше как потолок
+    для свободного поля вёрстки.
+    """
     buckets: Dict[int, List[Box]] = {}
     orphans: List[Box] = []
     for lb in lines:
@@ -196,7 +207,7 @@ def _assign(lines: List[Box], blks: List[Box]) -> Tuple[List[List[Box]], List[Bo
             buckets.setdefault(best, []).append(lb)
         else:
             orphans.append(lb)
-    return list(buckets.values()), orphans
+    return [(g, blks[i]) for i, g in buckets.items()], orphans
 
 
 def _split_columns(group: List[Box], scale: int) -> List[List[Box]]:
@@ -292,8 +303,121 @@ def _mask_poly(mask: np.ndarray, x: int, y: int, x2: int, y2: int,
     return [[int(p[0][0]) + mx, int(p[0][1]) + my] for p in approx]
 
 
+def _safe_box(gray: np.ndarray, mask: np.ndarray, x: int, y: int, x2: int, y2: int,
+              bg_val: int, blk: Optional[Box], line_h: int) -> Optional[List[int]]:
+    """Свободное поле балуна: куда можно верстать перевод.
+
+    Рамка исходного текста снята впритык, а перевод длиннее оригинала —
+    в неё он влезает только нечитаемым кеглем. Настоящий предел вёрстки не
+    бывший текст, а стенка пузыря.
+
+    Подложка ищется связной областью близкой яркости. Буквы её дырявят, из-за
+    чего область вокруг текста распалась бы на куски, поэтому маска глифов
+    заранее объявляется подложкой. Найденный габарит ужимается: пузырь обычно
+    эллипс, и прямоугольник по его габаритам вылезет за контур углами.
+
+    Заливка может утечь наружу — через разрыв контура или потому, что поле
+    страницы такое же белое. Тогда безопасной площади нет: лучше верстать
+    тесно, чем поверх рисунка.
+    """
+    H, W = gray.shape
+    glyph = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2) > 0
+    flat = ((np.abs(gray.astype(np.int16) - int(bg_val)) <= SAFE_TOL) | glyph)
+
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(flat.astype(np.uint8), 8)
+    cx, cy = (x + x2) // 2, (y + y2) // 2
+    lb = int(lab[min(cy, H - 1), min(cx, W - 1)])
+    if n < 2 or lb == 0:
+        return None
+
+    bx, by, bw, bh = (int(v) for v in stats[lb, :4])
+    if bw > W * SAFE_ESCAPE or bh > H * SAFE_ESCAPE:
+        return None
+    # Область обязана накрывать текст целиком: иначе поймали не подложку.
+    if bx > x or by > y or bx + bw < x2 or by + bh < y2:
+        return None
+
+    # Поле нужно не «побольше», а ровно настолько, насколько перевод длиннее:
+    # по ширине — чтобы слово не рвалось переносом, по высоте — на пару лишних
+    # строк. Всё сверх этого уже не запас, а выход за пузырь там, где заливка
+    # ошиблась.
+    w, h = x2 - x, y2 - y
+    sw = min(bw * SAFE_INSET, w * SAFE_GROW)
+    sh = min(bh * SAFE_INSET, h + SAFE_LINES * max(line_h, 1))
+    sx = (bx + bw / 2.0) - sw / 2.0
+    sy = (by + bh / 2.0) - sh / 2.0
+    ax, ay, ax2, ay2 = int(sx), int(sy), int(sx + sw), int(sy + sh)
+
+    # Заливка не видит границы там, где пузырь того же цвета, что и поле
+    # страницы: на разомкнутом контуре она уходит в панель целиком. Бокс
+    # блока от модели такой ошибки не делает и служит потолком.
+    if blk is not None:
+        ax, ay = max(ax, blk[0]), max(ay, blk[1])
+        ax2, ay2 = min(ax2, blk[0] + blk[2]), min(ay2, blk[1] + blk[3])
+
+    # Хуже, чем было, быть не должно: рамка текста всегда внутри.
+    ax, ay = max(0, min(ax, x)), max(0, min(ay, y))
+    ax2, ay2 = min(W, max(ax2, x2)), min(H, max(ay2, y2))
+
+    # Заливка могла утечь наружу: у пузыря того же цвета, что поле страницы,
+    # или с разомкнутым контуром связная область уходит в панель. Поэтому
+    # поле принимается, только если почти целиком лежит на подложке; иначе
+    # стягивается к рамке текста, пока не начнёт.
+    comp = lab == lb
+    for t in (1.0, 0.75, 0.5, 0.25):
+        bx0 = int(x + (ax - x) * t)
+        by0 = int(y + (ay - y) * t)
+        bx1 = int(x2 + (ax2 - x2) * t)
+        by1 = int(y2 + (ay2 - y2) * t)
+        if bx1 <= bx0 or by1 <= by0:
+            continue
+        if comp[by0:by1, bx0:bx1].mean() >= SAFE_INSIDE:
+            return [bx0, by0, bx1 - bx0, by1 - by0]
+    return None
+
+
+def _deoverlap(regions: Sequence[Region]) -> None:
+    """Разводит пересекающиеся свободные поля соседних балунов.
+
+    Два пузыря, нарисованные внахлёст, для заливки — одна белая область, и
+    поле вёрстки у них выходит общим: реплики лягут друг на друга.
+
+    Ось реза выбирается не по форме пересечения, а по тому, где разъехались
+    сами тексты: у соседних балунов это почти всегда одна ось, и резать по
+    другой значит не разделить их вовсе. Если тексты перекрываются по обеим,
+    регионы оставляются как есть — ужимать до нечитаемого кегля хуже, чем
+    оставить касание.
+    """
+    for i in range(len(regions)):
+        for j in range(i + 1, len(regions)):
+            a, b = regions[i], regions[j]
+            if not a.safe_box or not b.safe_box:
+                continue
+            ax, ay, aw, ah = a.safe_box
+            bx, by, bw, bh = b.safe_box
+            if min(ax + aw, bx + bw) <= max(ax, bx):
+                continue
+            if min(ay + ah, by + bh) <= max(ay, by):
+                continue
+
+            gaps = []
+            for ax_i in (0, 1):
+                p, q = a.bbox[ax_i], b.bbox[ax_i]
+                pe, qe = p + a.bbox[ax_i + 2], q + b.bbox[ax_i + 2]
+                gaps.append(max(p, q) - min(pe, qe))
+            axis = 0 if gaps[0] >= gaps[1] else 1
+            if gaps[axis] <= 0:
+                continue
+
+            lo, hi = (a, b) if a.bbox[axis] < b.bbox[axis] else (b, a)
+            cut = (lo.bbox[axis] + lo.bbox[axis + 2] + hi.bbox[axis]) // 2
+            lo.safe_box[axis + 2] = cut - lo.safe_box[axis]
+            hi.safe_box[axis + 2] += hi.safe_box[axis] - cut
+            hi.safe_box[axis] = cut
+
+
 def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
-            mask: np.ndarray, scale: int, confirmed: bool) -> Optional[Region]:
+            mask: np.ndarray, scale: int, blk: Optional[Box]) -> Optional[Region]:
     H, W = gray.shape
     x = min(p[0] for p in group)
     y = min(p[1] for p in group)
@@ -306,6 +430,7 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
     # Балун подтверждён моделью — верим ему. Всё остальное должно доказать,
     # что это текст, а не пара точек растра: иначе Content-Aware Fill
     # пойдёт затирать рисунок.
+    confirmed = blk is not None
     if not confirmed and ink_px < MIN_ORPHAN_PX:
         return None
 
@@ -331,11 +456,20 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
     else:
         kind = "bubble"
 
-    # Цвет букв берём с самих букв, а не угадываем по яркости фона.
+    # Цвет букв берём с самих букв, а не угадываем по яркости фона. Но брать
+    # медиану по всей маске нельзя: у мелкого шрифта сглаженных краёв больше,
+    # чем тела глифа, и медиана уезжает в серый — чёрная реплика верстается
+    # блёклой. Считаем по ядру: четверти пикселей, дальше всего отстоящей от
+    # фона по яркости. Так же работает и для белого текста на чёрном.
     sel = mask[y:y2, x:x2] > 0
     if sel.any():
         px = img_bgr[y:y2, x:x2][sel]
-        fg = [int(v) for v in np.median(px, axis=0)][::-1]
+        lum = px.astype(np.float32) @ np.array([0.114, 0.587, 0.299], np.float32)
+        far = np.abs(lum - float(bg_val))
+        core = px[far >= np.percentile(far, 75)]
+        if not len(core):
+            core = px
+        fg = [int(v) for v in np.median(core, axis=0)][::-1]
     else:
         fg = [0, 0, 0] if bg_val > 127 else [255, 255, 255]
 
@@ -345,9 +479,13 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
         mx2, my2 = min(W, x2 + PAD), min(H, y2 + PAD)
         poly = [[mx, my], [mx2, my], [mx2, my2], [mx, my2]]
 
+    # На рисунке свободного поля нет: там любое расширение лезет на арт.
+    safe = None if on_art else _safe_box(gray, mask, x, y, x2, y2, bg_val, blk, line_h)
+
     return Region(
         id="r%03d" % idx,
         bbox=[x, y, w, h],
+        safe_box=safe or [],
         mask_poly=poly,
         angle=0.0,
         lines=len(group),
@@ -368,13 +506,14 @@ def detect(img_bgr: np.ndarray) -> List[Region]:
     lines = _line_boxes(mask, scale)
 
     in_blocks, orphans = _assign(lines, blks)
-    cols = [c for g in in_blocks for c in _split_columns(g, scale)]
-    groups = [(g, True) for g in cols] + [(g, False) for g in _group_lines(orphans)]
-    groups.sort(key=lambda gc: min(p[1] for p in gc[0]))
+    groups = [(c, blk) for g, blk in in_blocks for c in _split_columns(g, scale)]
+    groups += [(g, None) for g in _group_lines(orphans)]
+    groups.sort(key=lambda gb: min(p[1] for p in gb[0]))
 
     regions: List[Region] = []
-    for g, confirmed in groups:
-        r = _region(len(regions) + 1, g, img_bgr, gray, mask, scale, confirmed)
+    for g, blk in groups:
+        r = _region(len(regions) + 1, g, img_bgr, gray, mask, scale, blk)
         if r is not None:
             regions.append(r)
+    _deoverlap(regions)
     return regions
