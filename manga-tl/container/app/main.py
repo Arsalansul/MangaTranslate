@@ -22,6 +22,7 @@ if _nn.available():
     detect, DETECTOR_NAME = _nn.detect, _nn.DETECTOR_NAME
 else:
     detect, DETECTOR_NAME = _morph.detect, _morph.DETECTOR_NAME
+from .kinds import revise_kinds
 from .ocr import read_regions, OCR_NAME
 from .schema import PageAnalysis
 
@@ -37,6 +38,14 @@ def _analyze(img: np.ndarray, name: str, lang: str) -> PageAnalysis:
     if not regions:
         warnings.append("Текст не найден: проверьте пороги детекта для этой страницы")
     regions = read_regions(img, regions, lang=lang)
+
+    # Вид региона детектор назначает до OCR, вслепую: текст поверх арта он
+    # записывает в звук и тем самым выводит из перевода. Теперь есть чем
+    # проверить — прочитанными словами.
+    revised = revise_kinds(regions)
+    if revised:
+        warnings.append("Подписей поверх арта, принятых за звук: %d "
+                        "(будут переведены и вписаны по месту)" % revised)
 
     weak = [r.id for r in regions if r.conf < 0.5]
     if weak:
