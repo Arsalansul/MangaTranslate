@@ -15,11 +15,13 @@ OpenRouter, локальные Ollama и LM Studio) говорит по OpenAI-�
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
 
 API_VERSION = "2023-06-01"
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
 # Готовые адреса. Модель у каждого можно переопределить: списки меняются
 # чаще, чем этот файл, а у бесплатных провайдеров — особенно часто.
@@ -52,9 +54,9 @@ BACKENDS = {
         "kind": "openai",
         "url": "https://openrouter.ai/api/v1/chat/completions",
         "key_env": "OPENROUTER_API_KEY",
-        "model": "deepseek/deepseek-chat-v3.1:free",
+        "model": "z-ai/glm-5.2:free",
         "json_mode": True,
-        "note": "витрина чужих моделей; бесплатные помечены :free",
+        "note": "витрина чужих моделей; список: translate.py openrouter",
     },
     "ollama": {
         "kind": "openai",
@@ -295,9 +297,29 @@ def providers_help() -> str:
     rows = []
     for name in sorted(BACKENDS):
         cfg = BACKENDS[name]
-        rows.append("  %-11s %-34s %s" % (name, cfg["model"], cfg["note"]))
+        rows.append("  %-11s %-24s %s" % (name, cfg["model"], cfg["note"]))
     return "\n".join(rows)
 
 
+def openrouter_free_models(limit: int = 20) -> list:
+    """Бесплатные модели OpenRouter живьём.
+
+    Витрина меняется быстрее этого файла: модель, записанная в BACKENDS
+    сегодня, через месяц может исчезнуть. Ключ для списка не нужен.
+    """
+    with urllib.request.urlopen(OPENROUTER_MODELS_URL, timeout=30) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    free = [m for m in data.get("data", []) if (m.get("id") or "").endswith(":free")]
+    free.sort(key=lambda m: -(m.get("context_length") or 0))
+    return free[:limit]
+
+
 if __name__ == "__main__":
-    print("Провайдеры перевода:\n" + providers_help())
+    if len(sys.argv) > 1 and sys.argv[1] == "openrouter":
+        print("Бесплатные модели OpenRouter (--model <id>):")
+        for m in openrouter_free_models():
+            print("  %-52s контекст %s" % (m["id"], m.get("context_length") or "?"))
+    else:
+        print("Провайдеры перевода:\n" + providers_help())
+        print("\nБесплатные модели OpenRouter меняются; свежий список:"
+              "\n  python host/translate.py openrouter")

@@ -119,6 +119,9 @@ API — это разные счета. Платный ключ, впрочем,
 около 1.3 ¢ на Sonnet и вдвое меньше на Haiku — глава в двадцать страниц
 выходит в четверть доллара.
 
+Ключ кладётся в переменную окружения — в файлы проекта его вписывать не
+надо:
+
 ```powershell
 setx ANTHROPIC_API_KEY "sk-ant-..."
 ```
@@ -130,6 +133,21 @@ setx ANTHROPIC_API_KEY "sk-ant-..."
 ```bash
 python host/translate.py
 ```
+
+**OpenRouter.** Ключ там один на все модели, бесплатные помечены `:free`:
+
+```powershell
+setx OPENROUTER_API_KEY "sk-or-v1-..."
+```
+
+```bash
+python host/translate.py openrouter          # свежий список бесплатных
+python host/run.py <папка> --provider openrouter --model z-ai/glm-5.2:free
+```
+
+Список бесплатных живёт своей жизнью: модель исчезает с витрины, не
+спросив нас, поэтому он и тянется по сети, а не лежит в коде. Если прогон
+ответил `HTTP 400: model not found` — возьмите из списка другую.
 
 Имя модели у любого провайдера переопределяется `--model`, адрес —
 `--api-url`. Любой сервер с OpenAI-совместимым `/chat/completions`
