@@ -23,9 +23,10 @@ import urllib.request
 API_VERSION = "2023-06-01"
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
-# Пауза перед повтором растёт вдвое: 3, 6, 12 секунд. Секунды, с которых
-# начинали раньше, для чужого лимита слишком коротки.
+# Пауза перед повтором растёт вдвое: 3, 6, 12, 24 секунды. Бесплатная модель
+# отпускает лимит за десятки секунд, и переждать дешевле, чем потерять страницу.
 RETRY_BASE_S = 3
+ATTEMPTS = 5
 
 # Готовые адреса. Модель у каждого можно переопределить: списки меняются
 # чаще, чем этот файл, а у бесплатных провайдеров — особенно часто.
@@ -239,7 +240,7 @@ class Engine:
         # Перегрузку и пятисотки повторяем: прогон главы идёт десятками
         # запросов подряд, и ронять его целиком из-за одного 429 бессмысленно.
         last = None
-        for attempt in range(4):
+        for attempt in range(ATTEMPTS):
             try:
                 with urllib.request.urlopen(self._request(prompt, json_mode),
                                             timeout=self.timeout) as resp:
@@ -267,8 +268,8 @@ class Engine:
             hint = ("\nЭто лимит, а не ошибка запроса. У бесплатных моделей он "
                     "общий на всех: возьмите другую (python host/translate.py "
                     "openrouter) или платную.")
-        raise TranslateError("%s недоступен после четырёх попыток: %s%s"
-                             % (self.url, last, hint))
+        raise TranslateError("%s недоступен после %d попыток: %s%s"
+                             % (self.url, ATTEMPTS, last, hint))
 
     @staticmethod
     def _pause(attempt, err=None):
@@ -282,16 +283,26 @@ class Engine:
 
     # --- то, ради чего всё -------------------------------------------
 
-    def translate_page(self, analysis: dict, glossary: dict = None) -> int:
-        """Проставляет translation в подходящих регионах. Возвращает их число."""
+    def translate_page(self, analysis: dict, glossary: dict = None,
+                       keep_filled: bool = False) -> int:
+        """Проставляет translation в подходящих регионах. Возвращает их число.
+
+        keep_filled бережёт уже заполненное: перевод в analysis.json могли
+        поправить руками, и затирать правку своим вариантом нельзя. В промпт
+        такие реплики всё равно идут — соседние реплики дают контекст.
+        """
         targets = [r for r in analysis["regions"] if translatable(r)]
         if not targets:
+            return 0
+        if keep_filled and all((r.get("translation") or "").strip() for r in targets):
             return 0
 
         got = _parse(self._call(_payload(targets, glossary)))
 
         filled = 0
         for r in targets:
+            if keep_filled and (r.get("translation") or "").strip():
+                continue
             value = (got.get(r["id"]) or "").strip()
             if not value:
                 continue

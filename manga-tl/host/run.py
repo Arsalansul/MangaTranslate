@@ -94,14 +94,20 @@ def process(name, full_dir, out_dir, args, engine, glossary):
     _save(apath, analysis)
 
     # --- перевод ------------------------------------------------------
-    already = sum(1 for r in analysis["regions"] if (r.get("translation") or "").strip())
+    targets = [r for r in analysis["regions"] if translate.translatable(r)]
+    already = sum(1 for r in targets if (r.get("translation") or "").strip())
     if args.erase_only or args.no_translate:
-        pass
-    elif args.reuse and already:
+        row["translated"] = already
+    elif args.reuse and already == len(targets):
+        # Всё переведено — модель не трогаем.
         row["translated"] = already
     else:
         try:
-            row["translated"] = engine.translate_page(analysis, glossary=glossary)
+            # В режиме --reuse дозаполняем дыры: страница, где модель
+            # ответила наполовину, иначе считалась бы готовой навсегда.
+            # Уже заполненное не перезаписываем — там могла быть правка руками.
+            row["translated"] = already + engine.translate_page(
+                analysis, glossary=glossary, keep_filled=args.reuse)
         except translate.TranslateError as e:
             # Строку отдаём наверх вместе с ошибкой: иначе в итоговой
             # таблице у страницы окажется ноль регионов, хотя детект их нашёл.
