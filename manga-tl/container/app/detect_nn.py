@@ -47,6 +47,7 @@ TILE_STEP = 0.8         # шаг тайла, перекрытие 20% — стр
 
 MIN_LINE_H = 6
 MIN_LINE_W = 10
+NARROW_LINE_H = 0.7     # доля кегля, при которой узкий столбик всё-таки буква
 KERNEL_FACTOR = 0.9     # ширина ядра склейки строки в долях высоты глифа
 DILATE_FACTOR = 0.35    # запас маски стирания в долях высоты глифа
 MAX_POLY_PTS = 200      # длиннее полигон Photoshop выделяет заметно медленнее
@@ -55,6 +56,7 @@ COL_GAP = 0.45          # ширина пустого коридора межд�
 STITCH_GAP = 0.6        # разрыв, который сшивается в строку, в долях её высоты
 STITCH_ALIGN = 0.6      # какая доля высоты обязана совпасть, чтобы счесть строки одной
 MIN_ORPHAN_PX = 120     # минимум чернил для региона, не подтверждённого боксом
+GROUP_NEST = 0.5        # доля меньшей группы внутри большей, при которой это один балун
 FLAT_BG_STD = 18.0      # разброс фона под текстом: ниже — ровная подложка
 PAD = 6                 # запас маски вокруг bbox: заливать надо шире глифов
 LINE_TOL = 0.15         # допуск вокруг бокса строки в долях её высоты
@@ -178,7 +180,14 @@ def _line_boxes(mask: np.ndarray, scale: int) -> List[Box]:
     boxes = []
     for c in contours:
         x, y, bw, bh = cv2.boundingRect(c)
-        if bh < MIN_LINE_H or bw < MIN_LINE_W:
+        if bh < MIN_LINE_H:
+            continue
+        # Узкая колонка чернил — либо крапина, либо строка из одной буквы:
+        # «I», «А», «?». Отличаем по росту: буква набора ровно такая же
+        # высокая, как соседние строки, а крапина втрое ниже. Потерянная
+        # строка дорого стоит: её не переводят и не стирают, и в пузыре
+        # поверх русского текста остаётся английская буква.
+        if bw < MIN_LINE_W and bh < scale * NARROW_LINE_H:
             continue
         boxes.append((x, y, bw, bh))
     return boxes
@@ -214,6 +223,52 @@ def _assign(lines: List[Box],
         else:
             orphans.append(lb)
     return [(g, blks[i]) for i, g in buckets.items()], orphans
+
+
+def _bounds(group: Sequence[Box]) -> Box:
+    x = min(b[0] for b in group)
+    y = min(b[1] for b in group)
+    x2 = max(b[0] + b[2] for b in group)
+    y2 = max(b[1] + b[3] for b in group)
+    return (x, y, x2 - x, y2 - y)
+
+
+def _nest(a: Box, b: Box) -> float:
+    """Какая доля рамки a лежит внутри рамки b; обе в виде x, y, w, h."""
+    ix = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    iy = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    if ix <= 0 or iy <= 0:
+        return 0.0
+    return (ix * iy) / float(a[2] * a[3])
+
+
+def _merge_nested(groups: List[Tuple[List[Box], Optional[Box]]]
+                  ) -> List[Tuple[List[Box], Optional[Box]]]:
+    """Сливает группы, сидящие одна в другой: это один балун, разбитый боксами.
+
+    Детектор иногда отдаёт на пузырь два бокса — общий и ещё один на строку
+    внутри. Строка уходит тому, чей бокс попался первым, остальные — другому,
+    и на один пузырь выходит два региона. Само по себе это полбеды, но OCR
+    читает регион по рамке, а рамка большего накрывает и чужую строку: её
+    переводят дважды и дважды кладут поверх пузыря.
+    """
+    out = list(groups)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(out)):
+            for j in range(i + 1, len(out)):
+                a, b = _bounds(out[i][0]), _bounds(out[j][0])
+                if max(_nest(a, b), _nest(b, a)) < GROUP_NEST:
+                    continue
+                big = out[i] if a[2] * a[3] >= b[2] * b[3] else out[j]
+                out[i] = (out[i][0] + out[j][0], big[1])
+                del out[j]
+                merged = True
+                break
+            if merged:
+                break
+    return out
 
 
 def _stitch(boxes: List[Box]) -> List[Box]:
@@ -613,6 +668,7 @@ def detect(img_bgr: np.ndarray) -> List[Region]:
     in_blocks, orphans = _assign(lines, blks)
     groups = [(c, blk) for g, blk in in_blocks for c in _split_columns(g, scale)]
     groups += [(g, None) for g in _group_lines(_stitch(orphans))]
+    groups = _merge_nested(groups)
     groups.sort(key=lambda gb: min(p[1] for p in gb[0]))
 
     regions: List[Region] = []

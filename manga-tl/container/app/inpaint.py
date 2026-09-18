@@ -29,9 +29,14 @@ MARGIN = 0.5        # контекст вокруг региона в долях
 MIN_CROP = 96       # меньше вырезать нет смысла: модели нужен контекст
 MAX_CROP = SIZE     # вырезку крупнее пришлось бы ужимать, а это мыло по рисунку
 FEATHER = 1.5       # размытие края заплатки, px
+GROW_RATIO = 0.2    # расширение контура буквы в долях кегля
+GROW_MIN = 3        # ореол и перо заплатки должны уместиться внутри дыры
+GROW_MAX = 4        # больше — начинает съедать рисунок вплотную к реплике
 TONE_SCALE = 81     # окно, которым меряется тон окрестности, px: заметно шире дыры
 TONE_MAX_SHIFT = 90  # предел правки уровня
 TONE_MIN_SEEN = 0.15  # доля видимого фона в окне, ниже которой правке нет опоры
+FLAT_RING = 3         # кольцо вокруг дыры, по которому судят о фоне, px
+FLAT_RING_STD = 8.0   # разброс в кольце, ниже которого фон считают ровным
 
 _session = None
 
@@ -77,6 +82,23 @@ def _polys(r: Dict) -> List[np.ndarray]:
 
     x, y, w, h = r["bbox"]
     return [np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.int32)]
+
+
+def _paint(mask: np.ndarray, r: Dict, off: Sequence[int] = (0, 0)) -> None:
+    """Кладёт контуры региона в маску, расширяя их на сглаженный край буквы.
+
+    Контур обводит букву по порогу, а у печатного текста за порогом остаётся
+    серый ореол в пиксель-другой. Заливке он даёт грязную кайму, а модель
+    принимает его за рисунок и честно дорисовывает по нему призрак стёртой
+    строки — ровно то, что видно на странице как «стёрли, но видно».
+    Расширяем от кегля: у крупного текста и ореол шире.
+    """
+    ox, oy = off
+    tmp = np.zeros(mask.shape, np.uint8)
+    cv2.fillPoly(tmp, [p - [ox, oy] for p in _polys(r)], 255)
+    g = int(min(GROW_MAX, max(GROW_MIN, round((r.get("font_px") or 0) * GROW_RATIO))))
+    tmp = cv2.dilate(tmp, np.ones((2 * g + 1, 2 * g + 1), np.uint8))
+    mask[tmp > 0] = 255
 
 
 def _crop_box(r: Dict, w_img: int, h_img: int) -> List[int]:
@@ -183,6 +205,27 @@ def _match_tone(crop: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> np.nd
     return np.clip(filled.astype(np.float32) + fix, 0, 255).astype(np.uint8)
 
 
+def _flatten(crop: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Где вокруг дыры ровный фон, кладёт в неё этот фон, а не работу модели.
+
+    Модель и на чистом листе возвращает не ровно белое: остаётся бледное
+    пятно по форме стёртого слова. Угадывать там нечего — точный цвет лучше
+    любой заплатки. Смотрим по каждому куску маски отдельно: одно слово
+    реплики может лежать на белом, а соседнее — на волосах.
+    """
+    n, lab = cv2.connectedComponents((mask > 0).astype(np.uint8))
+    k = np.ones((2 * FLAT_RING + 1, 2 * FLAT_RING + 1), np.uint8)
+    for i in range(1, n):
+        comp = (lab == i).astype(np.uint8)
+        # Соседняя дыра в кольцо не идёт: в ней ещё не стёртый текст.
+        ring = (cv2.dilate(comp, k) > 0) & (mask == 0)
+        px = crop[ring].reshape(-1, 3)
+        if px.size == 0 or px.std(axis=0).max() > FLAT_RING_STD:
+            continue
+        filled[comp > 0] = np.median(px, axis=0)
+    return filled
+
+
 def erase(img: np.ndarray, regions: Sequence[Dict], force: bool = False) -> Dict:
     """Стирает текст на копии страницы. Возвращает картинку и что было сделано.
 
@@ -200,7 +243,9 @@ def erase(img: np.ndarray, regions: Sequence[Dict], force: bool = False) -> Dict
     # Ровный фон: заливка его же цветом. Точнее модели и стоит ничего.
     for r in flat:
         rgb = r.get("bg") or [255, 255, 255]
-        cv2.fillPoly(out, _polys(r), (int(rgb[2]), int(rgb[1]), int(rgb[0])))
+        m = np.zeros((h_img, w_img), np.uint8)
+        _paint(m, r)
+        out[m > 0] = (int(rgb[2]), int(rgb[1]), int(rgb[0]))
 
     passes = 0
     if art and available():
@@ -209,11 +254,12 @@ def erase(img: np.ndarray, regions: Sequence[Dict], force: bool = False) -> Dict
             crop = out[y0:y1, x0:x1]
             mask = np.zeros(crop.shape[:2], np.uint8)
             for r in item["regions"]:
-                cv2.fillPoly(mask, [p - [x0, y0] for p in _polys(r)], 255)
+                _paint(mask, r, (x0, y0))
             if not mask.any():
                 continue
 
             filled = _match_tone(crop, _infer(crop, mask), mask)
+            filled = _flatten(crop, filled, mask)
             # Заплатка кладётся только на дыру: остальная страница должна
             # остаться попиксельно прежней, её ещё открывать в Photoshop.
             alpha = cv2.GaussianBlur((mask > 0).astype(np.float32), (0, 0), FEATHER)
