@@ -76,8 +76,8 @@ BACKENDS = {
         "url": "http://127.0.0.1:1234/v1/chat/completions",
         "key_env": None,
         "model": "local-model",
-        "json_mode": False,
-        "note": "локально, модель выбирается в самом LM Studio",
+        "json_mode": True,
+        "note": "локально, модель берётся та, что загружена в LM Studio",
     },
 }
 
@@ -151,6 +151,11 @@ def _payload(regions, glossary):
 def _parse(raw: str) -> dict:
     """Достаёт JSON из ответа, даже если модель обернула его в ограду."""
     text = (raw or "").strip()
+    # Локальные reasoning-модели рассуждают вслух перед ответом, и в черновике
+    # тоже попадаются фигурные скобки: поиск по первой «{» вытащил бы
+    # рассуждение вместо ответа.
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[-1].strip()
     fence = re.search(r"```(?:json)?\s*(.+?)```", text, re.S)
     if fence:
         text = fence.group(1).strip()
@@ -181,6 +186,7 @@ class Engine:
         self.kind = cfg["kind"]
         self.url = url or cfg["url"]
         self.model = model or cfg["model"]
+        self.model_given = bool(model)
         self.json_mode = cfg["json_mode"]
         self.key_env = cfg["key_env"]
         self.api_key = api_key or (os.environ.get(cfg["key_env"], "").strip()
@@ -202,6 +208,42 @@ class Engine:
                 "Совсем без модели: --no-translate (только стирание) или "
                 "--reuse (переводы из сохранённых analysis.json)."
                 % (self.provider, self.key_env))
+        if not self.key_env:
+            self._resolve_local()
+
+    def _resolve_local(self):
+        """Спрашивает у локального сервера, что в него загружено.
+
+        Имя в BACKENDS для локального провайдера — заглушка: модель выбирает
+        пользователь в LM Studio или Ollama, и угадать её нельзя. Заглушка
+        уезжала в запрос как есть, сервер отвечал 404, и глава падала на
+        первой же странице. Спросить дешевле, чем угадать, а заодно это
+        проверка, что сервер вообще поднят.
+        """
+        url = self.url.split("/chat/completions")[0] + "/models"
+        try:
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            raise TranslateError(
+                "Локальный сервер %s не отвечает: %s\n"
+                "В LM Studio это вкладка Developer, тумблер Status: Running; "
+                "порт по умолчанию 1234." % (url, e))
+        ids = [m.get("id") for m in data.get("data", []) if m.get("id")]
+        if self.model in ids:
+            return
+        if self.model_given:
+            raise TranslateError(
+                "Модели %r на %s нет. Загружены: %s"
+                % (self.model, url, ", ".join(ids) or "ничего"))
+        # Эмбеддер LM Studio ставит сама, и он всегда в списке первым.
+        chat = [i for i in ids if "embed" not in i.lower()]
+        if not chat:
+            raise TranslateError(
+                "На %s не загружено ни одной языковой модели (есть только: "
+                "%s).\nСкачайте и загрузите модель в LM Studio, затем "
+                "повторите." % (url, ", ".join(ids) or "ничего"))
+        self.model = chat[0]
 
     # --- транспорт ----------------------------------------------------
 
