@@ -69,6 +69,7 @@ BACKENDS = {
         "key_env": None,
         "model": "qwen2.5:14b",
         "json_mode": True,
+        "no_think": True,
         "note": "локально, без ключа и без лимитов; качество ниже",
     },
     "lmstudio": {
@@ -77,6 +78,7 @@ BACKENDS = {
         "key_env": None,
         "model": "local-model",
         "json_mode": True,
+        "no_think": True,
         "note": "локально, модель берётся та, что загружена в LM Studio",
     },
 }
@@ -148,6 +150,9 @@ def _payload(regions, glossary):
     }
 
 
+_PAIR = re.compile(r'"([\w.:-]+)"\s*:\s*"(.*?)"\s*(?=,\s*"|\s*\}|\s*$)', re.S)
+
+
 def _parse(raw: str) -> dict:
     """Достаёт JSON из ответа, даже если модель обернула его в ограду."""
     text = (raw or "").strip()
@@ -166,7 +171,14 @@ def _parse(raw: str) -> dict:
     try:
         out = json.loads(text)
     except ValueError as e:
-        raise TranslateError("Ответ модели не разобрался как JSON: %s" % e)
+        # Локальная модель нет-нет да и поставит внутри реплики живую кавычку
+        # («ЛИЛЬ МИТЧ"»), не экранировав её. Из-за одной такой страница целиком
+        # оставалась без перевода, хотя остальные два десятка строк в ответе
+        # разобрались бы. Подбираем пары «id: строка» вручную: значение тянем
+        # до кавычки, за которой идёт запятая с новым id или конец объекта.
+        out = dict(_PAIR.findall(text))
+        if not out:
+            raise TranslateError("Ответ модели не разобрался как JSON: %s" % e)
     if not isinstance(out, dict):
         raise TranslateError("Ожидался объект id -> перевод")
     return out
@@ -188,6 +200,7 @@ class Engine:
         self.model = model or cfg["model"]
         self.model_given = bool(model)
         self.json_mode = cfg["json_mode"]
+        self.no_think = cfg.get("no_think", False)
         self.key_env = cfg["key_env"]
         self.api_key = api_key or (os.environ.get(cfg["key_env"], "").strip()
                                    if cfg["key_env"] else "")
@@ -247,7 +260,7 @@ class Engine:
 
     # --- транспорт ----------------------------------------------------
 
-    def _request(self, prompt, json_mode):
+    def _request(self, prompt, json_mode, no_think=False):
         if self.kind == "anthropic":
             body = {
                 "model": self.model,
@@ -267,6 +280,11 @@ class Engine:
             }
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
+            if no_think:
+                # Локальные модели всё чаще reasoning: рассуждение перед
+                # ответом стоит сотен токенов на реплику в три слова, а на
+                # домашней карте это минуты. Переводу оно не нужно.
+                body["reasoning_effort"] = "none"
             headers = {"content-type": "application/json"}
             if self.api_key:
                 headers["authorization"] = "Bearer " + self.api_key
@@ -283,13 +301,14 @@ class Engine:
 
     def _call(self, prompt: str) -> str:
         json_mode = self.json_mode
+        no_think = self.no_think
         # Перегрузку и пятисотки повторяем: прогон главы идёт десятками
         # запросов подряд, и ронять его целиком из-за одного 429 бессмысленно.
         last = None
         for attempt in range(ATTEMPTS):
             try:
-                with urllib.request.urlopen(self._request(prompt, json_mode),
-                                            timeout=self.timeout) as resp:
+                req = self._request(prompt, json_mode, no_think)
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     return self._text(json.loads(resp.read().decode("utf-8")))
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:300]
@@ -298,6 +317,9 @@ class Engine:
                 # ответа всё равно умеет доставать объект из текста.
                 if e.code == 400 and json_mode and "response_format" in detail:
                     json_mode = False
+                    continue
+                if e.code == 400 and no_think and "reasoning_effort" in detail:
+                    no_think = False
                     continue
                 if e.code in (429, 500, 502, 503, 529):
                     last = "HTTP %d: %s" % (e.code, detail)
