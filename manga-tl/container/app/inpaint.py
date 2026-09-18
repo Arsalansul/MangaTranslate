@@ -36,7 +36,8 @@ TONE_SCALE = 81     # окно, которым меряется тон окре�
 TONE_MAX_SHIFT = 90  # предел правки уровня
 TONE_MIN_SEEN = 0.15  # доля видимого фона в окне, ниже которой правке нет опоры
 FLAT_RING = 3         # кольцо вокруг дыры, по которому судят о фоне, px
-FLAT_RING_STD = 8.0   # разброс в кольце, ниже которого фон считают ровным
+FLAT_TOL = 12         # допуск яркости, в пределах которого пиксель — тот же фон
+FLAT_SHARE = 0.75     # доля кольца этого цвета, при которой фон считают ровным
 
 _session = None
 
@@ -220,9 +221,16 @@ def _flatten(crop: np.ndarray, filled: np.ndarray, mask: np.ndarray) -> np.ndarr
         # Соседняя дыра в кольцо не идёт: в ней ещё не стёртый текст.
         ring = (cv2.dilate(comp, k) > 0) & (mask == 0)
         px = crop[ring].reshape(-1, 3)
-        if px.size == 0 or px.std(axis=0).max() > FLAT_RING_STD:
+        if px.size == 0:
             continue
-        filled[comp > 0] = np.median(px, axis=0)
+        # Не разброс, а доля одного цвета. Разброс объявляет кольцо пёстрым,
+        # стоит в него попасть контуру балуна или рамке кадра, — а это ровно
+        # то кольцо, которому мы больше всего верим. Спрашиваем иначе: почти
+        # ли всё кольцо одного цвета? Штрих чернил такого большинства не портит.
+        med = np.median(px, axis=0)
+        if (np.abs(px - med).max(axis=1) <= FLAT_TOL).mean() < FLAT_SHARE:
+            continue
+        filled[comp > 0] = med
     return filled
 
 

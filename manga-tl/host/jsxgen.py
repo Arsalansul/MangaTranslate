@@ -15,11 +15,22 @@ BS = chr(92)
 
 
 def esc(s: str) -> str:
-    """Строка -> ASCII-безопасный JS-литерал в кавычках."""
-    out = ['"']
+    """Строка -> ASCII-безопасное JS-выражение: литерал или их склейка.
+
+    Перенос строки — не символ внутри литерала, а разрыв между ними: конец
+    абзаца в Photoshop это CR, и собирается он String.fromCharCode, как и
+    все прочие спецсимволы здесь. Переносы приходят из списков (содержание,
+    титры), где разбиение смысловое; прочие управляющие символы — шум.
+    """
+    parts, out = [], ['"']
     for ch in str(s):
         k = ord(ch)
-        if ch == '"':
+        if ch == chr(10):
+            out.append('"')
+            parts.append("".join(out))
+            parts.append("String.fromCharCode(13)")
+            out = ['"']
+        elif ch == '"':
             out.append(BS + '"')
         elif k == 92:
             out.append(BS + BS)
@@ -30,7 +41,8 @@ def esc(s: str) -> str:
         else:
             out.append(ch)
     out.append('"')
-    return "".join(out)
+    parts.append("".join(out))
+    return " + ".join(parts)
 
 
 def _region_literal(r: Dict[str, Any]) -> str:
@@ -44,7 +56,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
     sx, sy, sw, sh = r.get("safe_box") or [x, y, w, h]
     return (
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
-        "size:%d,lead:%d,kind:%s,onArt:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "size:%d,lead:%d,kind:%s,onArt:%s,keep:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
@@ -52,6 +64,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
             int(r.get("line_h_px") or 0),
             esc(r.get("kind") or "unknown"),
             "true" if r.get("on_art") else "false",
+            "true" if r.get("keep_lines") else "false",
             fg[0], fg[1], fg[2],
             bg[0], bg[1], bg[2],
         )
@@ -285,8 +298,10 @@ step('typeset_all', function () {
       ti.kind = TextType.PARAGRAPHTEXT;
       ti.contents = r.txt;
       ti.font = FONT;
-      ti.justification = Justification.CENTER;
-      ti.hyphenation = true;
+      // Реплика центруется, список — нет: у содержания и титров левый край
+      // ровный, и переносить его в центр значит разъехаться с линейками.
+      ti.justification = r.keep ? Justification.LEFT : Justification.CENTER;
+      ti.hyphenation = !r.keep;
       try { setLanguage(LANG); if (!lang) lang = languageOf(); }
       catch (e) { if (!lang) lang = 'failed: ' + e; }
       var col = new SolidColor();
@@ -302,7 +317,7 @@ step('typeset_all', function () {
       ti.height = r.sh * K;
       var b = tl.bounds;
       var th = parseFloat(b[3]) - parseFloat(b[1]);
-      var dy = Math.max(0, Math.round((r.sh - th) / 2));
+      var dy = r.keep ? 0 : Math.max(0, Math.round((r.sh - th) / 2));
       ti.position = [r.sx, r.sy + dy];
       placed++;
     } catch (e) { R.push('{"step":"text:' + r.id + '","ok":false,"info":' + jstr(e) + '}'); }

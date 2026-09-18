@@ -58,6 +58,13 @@ STITCH_ALIGN = 0.6      # какая доля высоты обязана сов
 MIN_ORPHAN_PX = 120     # минимум чернил для региона, не подтверждённого боксом
 GROUP_NEST = 0.5        # доля меньшей группы внутри большей, при которой это один балун
 FLAT_BG_STD = 18.0      # разброс фона под текстом: ниже — ровная подложка
+FLAT_BG_TOL = 12        # допуск яркости, в пределах которого пиксель — тот же фон
+FLAT_BG_SHARE = 0.85    # доля подложки этого цвета: тоже признак ровной
+SFX_FONT_RATIO = 1.6    # кегль крупнее страничного во столько раз — рисованный звук
+SFX_MIN_LINES = 3       # и набран он в одну-две строки, а не абзацем
+RAGGED_MIN_LINES = 3    # по двум строкам о выключке судить нельзя
+RAGGED_LEFT = 0.3       # разброс левых краёв, при котором край ровный
+RAGGED_TIMES = 3        # во столько раз центры гуляют сильнее краёв
 PAD = 6                 # запас маски вокруг bbox: заливать надо шире глифов
 LINE_TOL = 0.15         # допуск вокруг бокса строки в долях её высоты
 LINE_MIN_RATIO = 0.4    # строка ниже этой доли медианы — не строка набора
@@ -356,23 +363,30 @@ def _split_columns(group: List[Box], scale: int) -> List[List[Box]]:
 
 
 def _bg_stats(gray: np.ndarray, mask: np.ndarray, x: int, y: int, x2: int, y2: int,
-              scale: int) -> Tuple[int, float]:
-    """Яркость и разброс подложки: пиксели рамки за вычетом раздутых глифов.
+              scale: int) -> Tuple[int, float, float]:
+    """Яркость, разброс и однородность подложки: рамка за вычетом раздутых глифов.
 
     Старый вариант мерил кольцо вокруг блока и на манге врал: кольцо
     садится на соседний рисунок или на обводку балуна, и ровный белый
     пузырь приезжает как текст поверх арта.
+
+    Разброса одного мало и здесь: обводка балуна, линейка под строкой,
+    угол соседнего кадра — любая чёрная деталь в рамке раздувает std,
+    хотя подложка под текстом белая. Поэтому считаем ещё долю пикселей
+    одного цвета: меньшинству чернил её не испортить.
     """
     crop = gray[y:y2, x:x2]
     mcrop = mask[y:y2, x:x2]
     if crop.size == 0:
-        return 255, 0.0
+        return 255, 0.0, 1.0
     d = max(3, int(scale * DILATE_FACTOR) | 1)
     grown = cv2.dilate(mcrop, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d, d)))
     bg = crop[grown == 0]
     if bg.size < 20:
         bg = crop.reshape(-1)
-    return int(np.median(bg)), float(np.std(bg))
+    med = int(np.median(bg))
+    share = float((np.abs(bg.astype(np.int16) - med) <= FLAT_BG_TOL).mean())
+    return med, float(np.std(bg)), share
 
 
 def _mask_poly(mask: np.ndarray, x: int, y: int, x2: int, y2: int,
@@ -551,6 +565,9 @@ def _deoverlap(regions: Sequence[Region]) -> None:
             a, b = regions[i], regions[j]
             if not a.safe_box or not b.safe_box:
                 continue
+            # Звук не верстается, и ужимать ради него соседа не за что.
+            if "sfx" in (a.kind, b.kind):
+                continue
             ax, ay, aw, ah = a.safe_box
             bx, by, bw, bh = b.safe_box
             if min(ax + aw, bx + bw) <= max(ax, bx):
@@ -572,6 +589,22 @@ def _deoverlap(regions: Sequence[Region]) -> None:
             lo.safe_box[axis + 2] = cut - lo.safe_box[axis]
             hi.safe_box[axis + 2] += hi.safe_box[axis] - cut
             hi.safe_box[axis] = cut
+
+
+def _ragged(group: List[Box], font_px: int) -> bool:
+    """Строки выключены влево и обрываются по смыслу, а не по ширине.
+
+    Так набраны содержание, титры, список — там перенос не технический,
+    и перевод, слитый в абзац, ляжет мимо линеек и мимо колонки номеров.
+    Отличить от реплики можно по геометрии: у реплики строки центрованы,
+    поэтому гуляют левые края; у списка ровно наоборот.
+    """
+    if len(group) < RAGGED_MIN_LINES or font_px <= 0:
+        return False
+    lefts = np.array([p[0] for p in group], np.float32)
+    centers = np.array([p[0] + p[2] * 0.5 for p in group], np.float32)
+    sl = float(lefts.std())
+    return sl < RAGGED_LEFT * font_px and float(centers.std()) > RAGGED_TIMES * sl
 
 
 def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
@@ -602,10 +635,17 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
         line_h = int(font_px * 1.2)
 
     local = max(font_px, scale)
-    bg_val, bg_std = _bg_stats(gray, mask, x, y, x2, y2, local)
-    on_art = bg_std > FLAT_BG_STD
+    bg_val, bg_std, bg_share = _bg_stats(gray, mask, x, y, x2, y2, local)
+    # Два признака ровной подложки, и хватает любого: разброс ловит серую
+    # растяжку, доля — белый пузырь, которому обводка испортила разброс.
+    on_art = bg_std > FLAT_BG_STD and bg_share < FLAT_BG_SHARE
 
-    if on_art:
+    # Звук — это рисунок, и нарисован он крупно и коротко. Раньше звуком
+    # считалось всё, что легло на арт, и под нож шли подтверждённые балуны
+    # с девятью строками реплики и страница содержания: их не переводило
+    # вовсе. Спрашиваем не про фон, а про сам набор.
+    drawn = font_px > scale * SFX_FONT_RATIO or len(group) < SFX_MIN_LINES
+    if on_art and drawn and not confirmed:
         kind = "sfx"
     elif confirmed:
         kind = "bubble"
@@ -637,9 +677,14 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
         mx2, my2 = min(W, x2 + PAD), min(H, y2 + PAD)
         poly = [[mx, my], [mx2, my], [mx2, my2], [mx, my2]]
     polys = _mask_polys(mask, group, x, y, x2, y2, local)
+    keep_lines = _ragged(group, font_px)
 
-    # На рисунке свободного поля нет: там любое расширение лезет на арт.
-    safe = None if on_art else _safe_box(gray, mask, x, y, x2, y2, bg_val, line_h)
+    # Рамку считаем всем, без оглядки на вид региона. Пустая рамка означает
+    # «весь bbox», а в него длинная русская реплика не влезает — так текст и
+    # вылезал из балуна. Считать только не-звукам нельзя: вид уточняется уже
+    # после OCR (kinds.revise_kinds), и возвращённая в перевод подпись
+    # осталась бы без рамки. На рисунке рост всё равно упрётся сразу.
+    safe = _safe_box(gray, mask, x, y, x2, y2, bg_val, line_h)
 
     return Region(
         id="r%03d" % idx,
@@ -649,6 +694,7 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
         mask_polys=polys,
         angle=0.0,
         lines=len(group),
+        keep_lines=keep_lines,
         font_px=font_px,
         line_h_px=line_h,
         kind=kind,

@@ -53,7 +53,7 @@ def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = "eng") 
             r.text, r.conf = "", 0.0
             continue
 
-        words, confs = [], []
+        words, confs, keys = [], [], []
         for i, word in enumerate(data.get("text", [])):
             word = (word or "").strip()
             if not word:
@@ -66,8 +66,21 @@ def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = "eng") 
                 continue
             words.append(word)
             confs.append(c)
+            keys.append(tuple(data[k][i] for k in ("block_num", "par_num", "line_num")))
 
-        r.text = " ".join(words)
+        if r.keep_lines and len(keys) == len(words):
+            # Список, содержание, титры: перенос там смысловой. Слитые в абзац,
+            # строки уедут от линеек и от колонки номеров, поэтому границы строк
+            # Tesseract'а тащим дальше как есть — через перевод и до вёрстки.
+            lines, prev = [], None
+            for word, key in zip(words, keys):
+                if key != prev:
+                    lines.append([])
+                    prev = key
+                lines[-1].append(word)
+            r.text = "\n".join(" ".join(w) for w in lines)
+        else:
+            r.text = " ".join(words)
         r.conf = round(float(np.mean(confs)) / 100.0, 3) if confs else 0.0
 
         letters = [ch for ch in r.text if ch.isalpha()]
