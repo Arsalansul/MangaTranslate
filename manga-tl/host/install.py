@@ -69,7 +69,6 @@ SCRIPT_FONTS = {
 
 HWND_BROADCAST = 0xFFFF
 WM_FONTCHANGE = 0x001D
-WM_SETTINGCHANGE = 0x001A
 SMTO_ABORTIFHUNG = 0x0002
 
 AUTO = False
@@ -473,17 +472,12 @@ def api_key():
     if not key:
         note("пусто, пропущено")
         return
-    # Пишем в реестр напрямую, а не через setx: у setx ключ оказался бы в
-    # командной строке процесса, то есть на виду у диспетчера задач и любого
-    # средства аудита. Заодно нет обрезки на 1024 символах.
+    # Куда и почему именно туда — в envkey; тем же кодом ключ пишет и
+    # веб-интерфейс, так что расходиться этим двоим нельзя.
+    import envkey
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0,
-                            winreg.KEY_SET_VALUE) as k:
-            winreg.SetValueEx(k, env, 0, winreg.REG_SZ, key)
-        ctypes.windll.user32.SendMessageTimeoutW(
-            HWND_BROADCAST, WM_SETTINGCHANGE, 0, "Environment",
-            SMTO_ABORTIFHUNG, 1000, None)
-    except OSError as e:
+        envkey.save(env, key)
+    except (OSError, ValueError) as e:
         bad("не записалась переменная %s: %s" % (env, e))
         return
     ok("%s записан в переменные пользователя" % env)

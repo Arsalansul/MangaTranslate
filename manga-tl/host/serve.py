@@ -29,6 +29,7 @@ import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge
+import envkey
 import fontcheck
 import run
 import translate
@@ -456,8 +457,40 @@ def _providers():
             # и на первом же скриншоте.
             "key_env": env or "", "needs_key": bool(env),
             "key_set": bool(env and os.environ.get(env, "").strip()),
+            # Ключ мог быть задан `set`'ом в том окне, откуда запущен сервер:
+            # тогда он работает, но исчезнет вместе с окном.
+            "key_stored": bool(env and envkey.stored(env)),
         })
     return out
+
+
+def api_key(body):
+    """Записать или убрать ключ провайдера.
+
+    Провайдер приходит именем из BACKENDS, а не готовым именем переменной:
+    запись в Environment — это исполнение кода при следующем входе в систему
+    (PATH, PYTHONSTARTUP), и открывать браузеру произвольное имя нельзя.
+    Обратно уходит только обновлённый список провайдеров: сам ключ в ответе
+    не нужен ни для чего, а во вкладке он жил бы и в истории, и на первом же
+    скриншоте.
+    """
+    name = _text(body, "provider")
+    cfg = translate.BACKENDS.get(name)
+    if cfg is None:
+        raise ApiError(400, "Нет такого провайдера: " + name)
+    if not cfg["key_env"]:
+        raise ApiError(400, "%s — модель на этой машине, ключ ей не нужен" % name)
+    key = _text(body, "key").strip()
+    try:
+        if key:
+            envkey.save(cfg["key_env"], key)
+        else:
+            envkey.clear(cfg["key_env"])
+    except ValueError as e:
+        raise ApiError(400, str(e))
+    except OSError as e:
+        raise ApiError(500, "Не записалась переменная %s: %s" % (cfg["key_env"], e))
+    return {"providers": _providers()}
 
 
 def _sources():
@@ -692,6 +725,7 @@ POST = {
     "/api/run": api_run,
     "/api/cancel": api_cancel,
     "/api/retypeset": api_retypeset,
+    "/api/key": api_key,
 }
 
 

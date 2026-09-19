@@ -135,6 +135,25 @@
   #log .e { color: var(--bad); }
   #log .s { color: var(--accent); }
 
+  /* --- экран ключей --------------------------------------------------- */
+  #keys { flex: 1; display: none; overflow: auto; padding: 12px 14px; }
+  #keys.show { display: block; }
+  #keys .lead { max-width: 720px; color: var(--dim); font-size: 12px;
+    margin: 0 0 12px; }
+  .k { max-width: 720px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 4px; padding: 9px 12px; margin-bottom: 8px; }
+  .k .hd { display: flex; gap: 8px; align-items: baseline; }
+  .k .hd b { font-size: 13px; }
+  .k .env { font-family: Consolas, monospace; font-size: 11.5px; color: var(--dim); }
+  .k .st { margin-left: auto; font-size: 11.5px; }
+  .k .st.yes { color: var(--accent); }
+  .k .st.no { color: var(--bad); }
+  .k .st.warn { color: var(--warn); }
+  .k .row { display: flex; gap: 8px; margin-top: 8px; }
+  .k .row input { flex: 1; min-width: 0; padding: 4px 6px; font: inherit;
+    border: 1px solid var(--line); border-radius: 3px; }
+  .k.local { color: var(--dim); }
+
   /* Окно бывает и в половину экрана: колонки ужимаются, а не выдавливают
      картинку в ноль. */
   @media (max-width: 1100px) { #pages { width: 130px; } #side { width: 310px; }
@@ -148,6 +167,7 @@
 <header>
   <button id="tab-view" class="on">Просмотр</button>
   <button id="tab-run">Запуск</button>
+  <button id="tab-keys">Ключи</button>
   <span id="viewhead">
     <label for="dir">Папка с результатом</label>
     <input id="dir" placeholder="E:/VibeCode/MySkills/manga-tl/out/chapter" spellcheck="false">
@@ -281,6 +301,15 @@
     <div id="why"></div>
     <pre id="log"></pre>
   </div>
+</section>
+
+<section id="keys">
+  <p class="lead">Ключ уходит в переменные среды пользователя — туда же, куда
+    его кладёт install.bat, и оттуда же его читает командная строка. Работает
+    сразу, перезапускать сервер не нужно; уже открытым окнам терминала ключ
+    достанется только после перезапуска. Обратно в браузер ключ не отдаётся
+    никогда, поэтому поле всегда пустое: можно только заменить или убрать.</p>
+  <div id="keylist"></div>
 </section>
 
 <script>
@@ -637,10 +666,88 @@ function onProvider() {
     note.textContent = "Ключ задан (" + p.key_env + ").";
     note.className = "note";
   } else {
-    note.textContent = "Нет ключа: задайте переменную " + p.key_env +
-      " и перезапустите serve.py. Без модели можно гнать с no-translate или reuse.";
+    note.textContent = "Нет ключа: вкладка «Ключи» (" + p.key_env +
+      "). Без модели можно гнать с no-translate или reuse.";
     note.className = "note bad";
   }
+}
+
+// --- ключи ----------------------------------------------------------
+
+function drawKeys() {
+  var box = $("keylist");
+  box.innerHTML = "";
+  if (!cfg) return;
+  cfg.providers.forEach(function (p) {
+    var el = document.createElement("div");
+    el.className = "k" + (p.needs_key ? "" : " local");
+    var hd = document.createElement("div");
+    hd.className = "hd";
+    hd.innerHTML = "<b></b><span class='env'></span><span class='st'></span>";
+    hd.querySelector("b").textContent = p.name;
+    hd.querySelector(".env").textContent = p.needs_key ? p.key_env : p.note;
+    var st = hd.querySelector(".st");
+    if (!p.needs_key) {
+      st.textContent = "ключ не нужен: модель на этой машине";
+    } else if (p.key_set && p.key_stored) {
+      st.textContent = "ключ задан";
+      st.className = "st yes";
+    } else if (p.key_set) {
+      // Так бывает после `set OPENROUTER_API_KEY=…` в окне, из которого
+      // запущен сервер: ключ работает, но до закрытия окна.
+      st.textContent = "ключ есть только у этого окна";
+      st.className = "st warn";
+    } else {
+      st.textContent = "ключа нет";
+      st.className = "st no";
+    }
+    el.appendChild(hd);
+    if (p.needs_key) el.appendChild(keyRow(p));
+    box.appendChild(el);
+  });
+}
+
+function keyRow(p) {
+  var row = document.createElement("div");
+  row.className = "row";
+  var inp = document.createElement("input");
+  inp.type = "password";
+  // Ключ не должен попасть ни в менеджер паролей, ни в автозаполнение:
+  // это не пароль от сайта, и предлагать его обратно браузер не должен.
+  inp.autocomplete = "off";
+  inp.spellcheck = false;
+  inp.placeholder = p.key_set ? "заменить ключ" : "вставьте ключ";
+  var put = document.createElement("button");
+  put.textContent = "Сохранить";
+  var del = document.createElement("button");
+  del.textContent = "Убрать";
+  del.disabled = !p.key_set;
+  put.onclick = function () {
+    var key = inp.value.trim();
+    if (!key) { say("Пустое поле: вставьте ключ.", "err"); return; }
+    sendKey(p, key, inp);
+  };
+  del.onclick = function () {
+    if (!confirm("Убрать ключ " + p.key_env + "? Перевод через " + p.name +
+                 " перестанет работать.")) return;
+    sendKey(p, "", inp);
+  };
+  inp.onkeydown = function (e) { if (e.key === "Enter") put.onclick(); };
+  row.appendChild(inp);
+  row.appendChild(put);
+  row.appendChild(del);
+  return row;
+}
+
+function sendKey(p, key, inp) {
+  api("/api/key", {provider: p.name, key: key}).then(function (data) {
+    cfg.providers = data.providers;
+    inp.value = "";
+    drawKeys();
+    onProvider();
+    say(key ? "Ключ " + p.key_env + " записан." : "Ключ " + p.key_env + " убран.",
+        key ? "ok" : null);
+  }).catch(fail);
 }
 
 function formValues() {
@@ -826,14 +933,18 @@ function showTab(which) {
   tab = which;
   $("view").style.display = which === "view" ? "" : "none";
   $("run").className = which === "run" ? "show" : "";
-  $("tab-view").className = which === "view" ? "on" : "";
-  $("tab-run").className = which === "run" ? "on" : "";
+  $("keys").className = which === "keys" ? "show" : "";
+  ["view", "run", "keys"].forEach(function (t) {
+    $("tab-" + t).className = which === t ? "on" : "";
+  });
   $("viewhead").style.display = which === "view" ? "" : "none";
-  if (which === "run" && !cfg) loadConfig().catch(fail);
+  if (which !== "view" && !cfg) loadConfig().then(drawKeys).catch(fail);
+  else if (which === "keys") drawKeys();
 }
 
 $("tab-view").onclick = function () { showTab("view"); };
 $("tab-run").onclick = function () { showTab("run"); };
+$("tab-keys").onclick = function () { showTab("keys"); };
 
 $("open").onclick = function () {
   say("");
