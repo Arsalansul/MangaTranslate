@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import webbrowser
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge
@@ -809,6 +810,8 @@ def main():
                         "можно не указывать: главу открывают и запускают "
                         "из браузера")
     p.add_argument("--port", type=int, default=PORT)
+    p.add_argument("--open", action="store_true",
+                   help="открыть интерфейс в браузере (так делает manga-tl.bat)")
     args = p.parse_args()
 
     if args.out_dir:
@@ -827,7 +830,14 @@ def main():
             "Порт %d уже занят — похоже, serve.py где-то запущен. Остановите "
             "его (Ctrl+C в том окне) или возьмите другой порт: --port %d.\n%s"
             % (args.port, args.port + 1, e))
-    print("интерфейс: http://127.0.0.1:%d   (Ctrl+C — остановить)" % args.port)
+    url = "http://127.0.0.1:%d" % args.port
+    print("интерфейс: %s   (Ctrl+C — остановить)" % url)
+    if args.open:
+        # Открывать отсюда, а не из .bat: сокет уже слушает, и запрос браузера
+        # дождётся своей очереди, даже если serve_forever ещё не дошёл до цикла.
+        # Батник же может только подождать наугад — и попасть в «сайт недоступен»
+        # на медленной машине.
+        webbrowser.open(url)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
