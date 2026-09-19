@@ -785,6 +785,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         sys.stderr.write((fmt % args) + "\n")
 
 
+class Server(http.server.ThreadingHTTPServer):
+    """То же, что ThreadingHTTPServer, но без права встать на занятый порт.
+
+    На Windows SO_REUSEADDR разрешает привязаться к порту, который уже кто-то
+    слушает: второй serve.py поднимается молча, а дальше соединения делятся
+    между двумя процессами через раз. Снаружи это выглядит как «кнопка
+    Открыть не работает»: половина запросов попадает в процесс, который про
+    открытую главу ничего не знает, и интерфейс отвечает то главой, то
+    пустотой. На POSIX флаг такого не позволяет и нужен, чтобы перезапуск не
+    спотыкался о TIME_WAIT, — поэтому снимаем его только под Windows.
+    """
+    allow_reuse_address = os.name != "nt"
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="serve.py",
@@ -806,7 +820,13 @@ def main():
         print("глава: %s" % (STATE["chapter"] or "исходники не найдены"))
         print("выход: %s (%d страниц)" % (STATE["out_dir"], len(STATE["pages"])))
 
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        srv = Server(("127.0.0.1", args.port), Handler)
+    except OSError as e:
+        raise SystemExit(
+            "Порт %d уже занят — похоже, serve.py где-то запущен. Остановите "
+            "его (Ctrl+C в том окне) или возьмите другой порт: --port %d.\n%s"
+            % (args.port, args.port + 1, e))
     print("интерфейс: http://127.0.0.1:%d   (Ctrl+C — остановить)" % args.port)
     try:
         srv.serve_forever()
