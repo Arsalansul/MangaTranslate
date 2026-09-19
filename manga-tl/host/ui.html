@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<!-- Интерфейс главы: запуск, приёмка, правка. Один файл, ванильный JS, без
+     сборки и без CDN: host/ ставится человеку, у которого есть Photoshop и
+     Python, и страница обязана открыться без интернета. -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>manga-tl — глава</title>
+<style>
+  :root {
+    --bg: #f2f2f0; --panel: #fff; --line: #d8d8d4; --ink: #22221f;
+    --dim: #6f6f68; --accent: #2f6f4f; --bad: #a33; --warn: #8a6d1f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+    background: var(--bg); color: var(--ink);
+  }
+  header {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header input { flex: 1 1 340px; min-width: 240px; padding: 5px 8px;
+    border: 1px solid var(--line); border-radius: 3px; font: inherit; }
+  #viewhead { display: flex; gap: 8px; align-items: center; flex: 1 1 400px; }
+  button { font: inherit; padding: 5px 10px; border: 1px solid var(--line);
+    background: #fafaf8; border-radius: 3px; cursor: pointer; }
+  button:hover:not(:disabled) { background: #ececea; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .meta { color: var(--dim); font-size: 12px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .chip { font-size: 12px; padding: 2px 8px; border-radius: 9px;
+    border: 1px solid var(--line); background: #fafaf8; white-space: nowrap; }
+  .chip.run { background: #eaf3ee; border-color: #9cc2ad; color: var(--accent); }
+  .chip.bad { background: #fbeaea; border-color: #e3bcbc; color: var(--bad); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #pages { width: 190px; overflow: auto; background: var(--panel);
+    border-right: 1px solid var(--line); }
+  #pages .p { padding: 5px 9px; border-bottom: 1px solid #eee; cursor: pointer;
+    display: flex; justify-content: space-between; gap: 6px; }
+  #pages .p:hover { background: #f6f6f2; }
+  #pages .p.sel { background: #e6eee9; box-shadow: inset 3px 0 0 var(--accent); }
+  #pages .p .n { font-variant-numeric: tabular-nums; }
+  #pages .p .c { color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+  #pages .p.fail .n::after { content: " !"; color: var(--bad); font-weight: 700; }
+
+  #viewer { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #bar { display: flex; gap: 6px; align-items: center; padding: 6px 10px;
+    border-bottom: 1px solid var(--line); background: var(--panel); }
+  #stage { flex: 1; overflow: auto; padding: 10px; display: flex; gap: 10px;
+    align-items: flex-start; justify-content: center; }
+  figure { margin: 0; flex: 1 1 0; min-width: 0; max-width: 780px; }
+  figcaption { font-size: 11px; color: var(--dim); padding-bottom: 3px; }
+  .holder { position: relative; background: #fff; border: 1px solid var(--line); }
+  .holder img { display: block; width: 100%; height: auto; }
+  .box { position: absolute; border: 1px solid rgba(190,40,40,.55); pointer-events: auto;
+    cursor: pointer; }
+  .box.sel { border-color: #1b6; background: rgba(30,190,110,.18);
+    box-shadow: 0 0 0 1px #1b6; }
+  .box.none { border-style: dashed; border-color: rgba(120,120,120,.5); }
+
+  #side { width: 400px; display: flex; flex-direction: column;
+    background: var(--panel); border-left: 1px solid var(--line); }
+  #regions { flex: 1; overflow: auto; padding: 6px; }
+  .reg { border: 1px solid var(--line); border-radius: 3px; padding: 6px;
+    margin-bottom: 6px; background: #fcfcfa; }
+  .reg.sel { border-color: var(--accent); background: #f2f8f4; }
+  .reg .hd { display: flex; gap: 6px; align-items: baseline; font-size: 11px;
+    color: var(--dim); cursor: pointer; }
+  .reg .hd b { color: var(--ink); font-size: 12px; }
+  .reg .orig { font-size: 12px; color: #444; white-space: pre-wrap;
+    margin: 3px 0; font-family: Consolas, monospace; }
+  .reg textarea { width: 100%; min-height: 40px; resize: vertical; font: inherit;
+    padding: 4px 5px; border: 1px solid var(--line); border-radius: 3px; }
+  .reg.dirty textarea { border-color: var(--warn); background: #fffdf3; }
+  .tag { border: 1px solid var(--line); border-radius: 8px; padding: 0 5px;
+    background: #fff; }
+  .tag.skip { color: var(--warn); border-color: #ddcf9a; background: #fdf8e8; }
+  .tag.low { color: var(--bad); border-color: #e3bcbc; background: #fdf1f1; }
+  #foot { border-top: 1px solid var(--line); padding: 7px 9px; font-size: 11.5px;
+    color: var(--dim); background: #fafaf8; }
+  #foot code { display: block; margin: 4px 0; padding: 4px 6px; background: #fff;
+    border: 1px solid var(--line); border-radius: 3px; font-family: Consolas, monospace;
+    font-size: 11px; word-break: break-all; color: var(--ink); }
+  #msg { padding: 4px 12px; font-size: 12px; }
+  #msg.err { background: #fbeaea; color: var(--bad); }
+  #msg.warn { background: #fdf8e8; color: var(--warn); }
+  #msg.ok { background: #eaf3ee; color: var(--accent); }
+  .empty { padding: 24px; color: var(--dim); text-align: center; }
+
+  /* --- экран запуска ------------------------------------------------- */
+  #run { flex: 1; display: none; min-height: 0; }
+  #run.show { display: flex; }
+  #form { width: 430px; overflow: auto; padding: 10px 12px; background: var(--panel);
+    border-right: 1px solid var(--line); }
+  #form h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--dim); margin: 14px 0 6px; font-weight: 600; }
+  #form h2:first-child { margin-top: 0; }
+  .f { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .f > label { width: 118px; flex: none; color: var(--dim); }
+  .f > input, .f > select { flex: 1; min-width: 0; padding: 4px 6px; font: inherit;
+    border: 1px solid var(--line); border-radius: 3px; background: #fff; color: var(--ink); }
+  .f > input[type=number] { flex: none; width: 90px; }
+  .note { color: var(--dim); font-size: 11.5px; margin: -2px 0 8px 126px; }
+  .note.bad { color: var(--bad); }
+  .note.warn { color: var(--warn); }
+  .checks label { display: block; margin-bottom: 4px; }
+  .checks .hint { color: var(--dim); font-size: 11.5px; }
+  #go { display: flex; gap: 8px; align-items: center; margin: 14px 0 6px; }
+  #go button { padding: 6px 14px; }
+  #run-go { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #run-go:hover:not(:disabled) { background: #275c42; }
+
+  #jobpane { flex: 1; display: flex; flex-direction: column; min-width: 0;
+    padding: 10px 12px; gap: 8px; }
+  #jobhead { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  #jobhead b { font-size: 14px; }
+  #bar-wrap { height: 6px; background: #e3e3df; border-radius: 3px; overflow: hidden; }
+  #bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  #why { padding: 6px 9px; border-radius: 3px; font-size: 12px; display: none; }
+  #why.show { display: block; background: #fdf8e8; border: 1px solid #ddcf9a;
+    color: var(--warn); }
+  #why.show.bad { background: #fbeaea; border-color: #e3bcbc; color: var(--bad); }
+  #log { flex: 1; overflow: auto; margin: 0; padding: 8px 10px; background: #fff;
+    border: 1px solid var(--line); border-radius: 3px; white-space: pre-wrap;
+    font-family: Consolas, monospace; font-size: 11.5px; }
+  #log .e { color: var(--bad); }
+  #log .s { color: var(--accent); }
+
+  /* Окно бывает и в половину экрана: колонки ужимаются, а не выдавливают
+     картинку в ноль. */
+  @media (max-width: 1100px) { #pages { width: 130px; } #side { width: 310px; }
+    #form { width: 360px; } }
+  @media (max-width: 820px) { #pages { width: 96px; } #side { width: 260px; }
+    #form { width: 320px; } .f > label { width: 96px; } .note { margin-left: 104px; } }
+</style>
+</head>
+<body>
+
+<header>
+  <button id="tab-view" class="on">Просмотр</button>
+  <button id="tab-run">Запуск</button>
+  <span id="viewhead">
+    <label for="dir">Папка с результатом</label>
+    <input id="dir" placeholder="E:/VibeCode/MySkills/manga-tl/out/chapter" spellcheck="false">
+    <button id="open">Открыть</button>
+  </span>
+  <span class="meta" id="info"></span>
+  <span class="chip" id="chip">задач нет</span>
+</header>
+<div id="msg"></div>
+
+<main id="view">
+  <div id="pages"></div>
+  <div id="viewer">
+    <div id="bar">
+      <button data-mode="src">оригинал</button>
+      <button data-mode="out">результат</button>
+      <button data-mode="both" class="on">рядом</button>
+      <span class="meta" id="pos"></span>
+      <span style="flex:1"></span>
+      <button id="prev" title="←">←</button>
+      <button id="next" title="→">→</button>
+    </div>
+    <div id="stage"><div class="empty">Укажите папку с результатом и нажмите «Открыть».</div></div>
+  </div>
+  <div id="side">
+    <div id="regions"></div>
+    <div id="foot">
+      <div><button id="save" disabled>Сохранить перевод</button>
+        <span id="dirty" class="meta"></span></div>
+      <div style="margin-top:6px">
+        Пустой перевод — не ошибка, а значение: регион с пустым переводом
+        <b>не стирается вовсе</b> (так на странице остаются звуки). Очистить
+        поле — значит вернуть как было.
+      </div>
+      <div style="margin-top:8px"><button id="retype" disabled>Пересобрать страницу</button></div>
+      <div style="margin-top:4px">Пересборка берёт перевод с диска, но заново
+        стирает баллоны в контейнере и верстает в Photoshop: <b>десятки секунд
+        на страницу</b>, и Photoshop в это время занят. Ход — на вкладке
+        «Запуск».</div>
+      <div style="margin-top:6px">То же самое из командной строки:</div>
+      <code id="cmd">—</code>
+    </div>
+  </div>
+</main>
+
+<section id="run">
+  <div id="form">
+    <h2>Что гоним</h2>
+    <div class="f">
+      <label for="r-target">Папка главы</label>
+      <input id="r-target" placeholder="E:/манга/Chapter 12" spellcheck="false">
+      <button id="r-scan">Сканировать</button>
+    </div>
+    <div class="note" id="r-scan-note">Сколько там страниц — видно до запуска.</div>
+    <div class="f">
+      <label for="r-out">Куда (не обязательно)</label>
+      <input id="r-out" placeholder="по умолчанию out/<имя папки>" spellcheck="false">
+    </div>
+
+    <h2>Языки и шрифт</h2>
+    <div class="f">
+      <label for="r-lang">Язык исходника</label>
+      <select id="r-lang"></select>
+    </div>
+    <div class="note" id="r-lang-note"></div>
+    <div class="f">
+      <label for="r-target-lang">Язык перевода</label>
+      <select id="r-target-lang"></select>
+    </div>
+    <div class="f">
+      <label for="r-font">Шрифт</label>
+      <select id="r-font"></select>
+    </div>
+    <div class="note" id="r-font-note"></div>
+
+    <h2>Кто переводит</h2>
+    <div class="f">
+      <label for="r-provider">Провайдер</label>
+      <select id="r-provider"></select>
+    </div>
+    <div class="note" id="r-provider-note"></div>
+    <div class="f">
+      <label for="r-model">Модель</label>
+      <input id="r-model" spellcheck="false">
+    </div>
+    <div class="f">
+      <label for="r-glossary">Глоссарий</label>
+      <input id="r-glossary" placeholder='JSON {"Enkrid": "Энкрид"}' spellcheck="false">
+    </div>
+
+    <h2>Режим</h2>
+    <div class="checks">
+      <label><input type="checkbox" id="r-reuse"> <b>reuse</b>
+        <span class="hint">— брать анализ и перевод из готовых analysis.json</span></label>
+      <label><input type="checkbox" id="r-no_translate"> <b>no-translate</b>
+        <span class="hint">— не звать модель: детект, стирание, вёрстка</span></label>
+      <label><input type="checkbox" id="r-erase_only"> <b>erase-only</b>
+        <span class="hint">— стереть, но не верстать</span></label>
+      <label><input type="checkbox" id="r-analyze_only"> <b>analyze-only</b>
+        <span class="hint">— не трогать Photoshop вовсе</span></label>
+    </div>
+    <div class="f" style="margin-top:8px">
+      <label for="r-limit">Первых страниц</label>
+      <input type="number" id="r-limit" min="1" placeholder="все">
+    </div>
+    <div class="f">
+      <label for="r-start">Начать со страницы</label>
+      <select id="r-start"><option value="">с первой</option></select>
+    </div>
+    <div class="note">Список страниц берётся из сканирования: имени, которого
+      в главе нет, прогон не примет.</div>
+
+    <div id="go">
+      <button id="run-go">Запустить главу</button>
+      <button id="r-check">Проверить</button>
+      <button id="r-cancel" disabled>Отменить</button>
+    </div>
+    <div class="note" style="margin-left:0">Отмена не убивает прогон мгновенно:
+      он дорабатывает текущий шаг и выходит. Вёрстка идёт внутри Photoshop,
+      и оборвать её снаружи нельзя.</div>
+  </div>
+
+  <div id="jobpane">
+    <div id="jobhead">
+      <b id="job-title">Задач ещё не было</b>
+      <span class="meta" id="job-counts"></span>
+      <span style="flex:1"></span>
+      <span class="meta" id="job-out"></span>
+    </div>
+    <div id="bar-wrap"><div id="bar-fill"></div></div>
+    <div id="why"></div>
+    <pre id="log"></pre>
+  </div>
+</section>
+
+<script>
+"use strict";
+var info = null;      // шапка отчёта: обе папки, шрифт, движок
+var pages = [];       // карточки страниц
+var page = null;      // открытая страница целиком
+var dirty = {};       // id -> новый перевод, ещё не записанный на диск
+var sel = null;       // выделенный регион
+var mode = "both";
+var tab = "view";
+
+var cfg = null;       // /api/config: шрифты, провайдеры, языки
+var job = null;       // последний снапшот /api/status
+var cursor = 0;       // сколько строк лога уже показано
+var timer = null;
+
+var SETTINGS = ["r-target", "r-out", "r-lang", "r-target-lang", "r-font",
+                "r-provider", "r-model", "r-glossary", "r-limit",
+                "r-reuse", "r-no_translate", "r-erase_only", "r-analyze_only"];
+
+var $ = function (id) { return document.getElementById(id); };
+
+function say(text, kind) {
+  var m = $("msg");
+  m.textContent = text || "";
+  m.className = text ? (kind || "") : "";
+}
+
+function api(path, body) {
+  var opt = body ? {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)
+  } : {};
+  return fetch(path, opt).then(function (r) {
+    return r.json().then(function (data) {
+      if (!r.ok || data.error) throw new Error(data.error || ("HTTP " + r.status));
+      return data;
+    });
+  });
+}
+
+// --- глава ----------------------------------------------------------
+
+function showChapter(data) {
+  info = data;
+  pages = data.pages || [];
+  $("dir").value = data.out;
+  try { localStorage.setItem("manga-tl-out", data.out); } catch (e) {}
+  $("info").innerHTML = "";
+  var meta = document.createElement("span");
+  meta.textContent = (data.chapter || "исходники не найдены") + "  →  " +
+    pages.length + " стр.,  " + data.lang + "→" + data.target_lang + ",  " +
+    (data.engine || "?") + ",  " + (data.font || "?");
+  $("info").appendChild(meta);
+  drawPages();
+  var first = pages.filter(function (p) { return p.editable; })[0] || pages[0];
+  if (first) openPage(first.stem);
+}
+
+function drawPages() {
+  var box = $("pages");
+  box.innerHTML = "";
+  pages.forEach(function (p) {
+    var el = document.createElement("div");
+    el.className = "p" + (p.ok ? "" : " fail") + (page && page.stem === p.stem ? " sel" : "");
+    el.title = p.note || "";
+    el.innerHTML = "<span class='n'></span><span class='c'></span>";
+    el.querySelector(".n").textContent = p.stem;
+    el.querySelector(".c").textContent = p.translated + "/" + p.regions;
+    el.onclick = function () { openPage(p.stem); };
+    box.appendChild(el);
+  });
+}
+
+function rowOf(stem) {
+  for (var i = 0; i < pages.length; i++) if (pages[i].stem === stem) return pages[i];
+  return null;
+}
+
+// --- страница -------------------------------------------------------
+
+function openPage(stem) {
+  if (!confirmDrop()) return;
+  api("/api/page?stem=" + encodeURIComponent(stem)).then(function (data) {
+    page = data; dirty = {}; sel = null;
+    var row = rowOf(stem);
+    if (row) { row.regions = data.regions.length; row.translated = data.translated;
+               row.out = data.out; }
+    say(data.warnings.length ? data.warnings.join("; ") : "", "warn");
+    drawPages(); drawStage(); drawRegions(); drawFoot();
+  }).catch(fail);
+}
+
+function step(d) {
+  if (!page) return;
+  for (var i = 0; i < pages.length; i++) {
+    if (pages[i].stem === page.stem && pages[i + d]) return openPage(pages[i + d].stem);
+  }
+}
+
+function drawStage() {
+  var stage = $("stage");
+  stage.innerHTML = "";
+  if (!page) return;
+  $("pos").textContent = page.stem + " — регионов " + page.regions.length +
+    ", переведено " + page.translated + " из " + page.targets;
+  // Обе картинки держим в DOM и прячем стилем: иначе переключение режима
+  // каждый раз заново тянет пятимегабайтный PNG.
+  side("src", page.src, "оригинал");
+  side("out", page.out, "результат");
+  applyMode();
+}
+
+function side(kind, name, caption) {
+  var fig = document.createElement("figure");
+  fig.dataset.kind = kind;
+  var cap = document.createElement("figcaption");
+  cap.textContent = caption + (name ? "" : " — нет файла");
+  fig.appendChild(cap);
+  var holder = document.createElement("div");
+  holder.className = "holder";
+  if (name) {
+    var img = document.createElement("img");
+    // Пересборка кладёт PNG под тем же именем: без метки времени браузер
+    // показал бы прежнюю картинку из кэша.
+    img.src = "/api/img?kind=" + kind + "&name=" + encodeURIComponent(name) +
+      "&v=" + page.stamp;
+    img.alt = caption;
+    holder.appendChild(img);
+  } else {
+    holder.style.minHeight = "60px";
+  }
+  page.regions.forEach(function (r) {
+    var b = document.createElement("div");
+    b.className = "box" + (r.translatable ? "" : " none");
+    b.dataset.id = r.id;
+    b.style.left = (100 * r.bbox[0] / page.width) + "%";
+    b.style.top = (100 * r.bbox[1] / page.height) + "%";
+    b.style.width = (100 * r.bbox[2] / page.width) + "%";
+    b.style.height = (100 * r.bbox[3] / page.height) + "%";
+    b.title = r.id + ": " + r.text;
+    b.onclick = function () { select(r.id, true); };
+    holder.appendChild(b);
+  });
+  fig.appendChild(holder);
+  $("stage").appendChild(fig);
+}
+
+function applyMode() {
+  [].forEach.call(document.querySelectorAll("#bar button[data-mode]"), function (b) {
+    b.className = b.dataset.mode === mode ? "on" : "";
+  });
+  [].forEach.call(document.querySelectorAll("#stage figure"), function (f) {
+    f.style.display = (mode === "both" || mode === f.dataset.kind) ? "" : "none";
+  });
+}
+
+// --- регионы --------------------------------------------------------
+
+function drawRegions() {
+  var box = $("regions");
+  box.innerHTML = "";
+  if (!page) return;
+  page.regions.forEach(function (r) {
+    var el = document.createElement("div");
+    el.className = "reg";
+    el.dataset.id = r.id;
+
+    var hd = document.createElement("div");
+    hd.className = "hd";
+    hd.innerHTML = "<b></b><span class='tag'></span><span></span>";
+    hd.querySelector("b").textContent = r.id;
+    hd.querySelector(".tag").textContent = r.kind;
+    hd.lastChild.textContent = r.font_px + "px · conf " + r.conf.toFixed(2);
+    if (r.conf < 0.5) hd.querySelector(".tag").classList.add("low");
+    if (!r.translatable) {
+      var skip = document.createElement("span");
+      skip.className = "tag skip";
+      skip.textContent = "модель пропускает";
+      skip.title = "Звук или слишком мелкий текст: перевод не запрашивается, " +
+        "регион остаётся на рисунке. Если вписать перевод руками — он будет " +
+        "стёрт и свёрстан как обычный.";
+      hd.appendChild(skip);
+    }
+    hd.onclick = function () { select(r.id, false); };
+    el.appendChild(hd);
+
+    var orig = document.createElement("div");
+    orig.className = "orig";
+    orig.textContent = r.text;
+    el.appendChild(orig);
+
+    var ta = document.createElement("textarea");
+    ta.value = r.translation;
+    ta.spellcheck = false;
+    ta.oninput = function () { edit(r, ta.value, el); };
+    ta.onfocus = function () { select(r.id, false); };
+    el.appendChild(ta);
+
+    box.appendChild(el);
+  });
+  markDirty();
+}
+
+function edit(r, value, el) {
+  if (value === r.translation) delete dirty[r.id];
+  else dirty[r.id] = value;
+  el.classList.toggle("dirty", dirty.hasOwnProperty(r.id));
+  markDirty();
+}
+
+function markDirty() {
+  var n = Object.keys(dirty).length;
+  var busy = !!(job && job.state === "running");
+  $("save").disabled = !n || busy;
+  // Пересобирать с несохранёнными правками бессмысленно: прогон читает
+  // analysis.json с диска, а правка ещё в поле ввода.
+  $("retype").disabled = !page || busy || !!n;
+  $("dirty").textContent = n ? ("изменено регионов: " + n) : "правок нет";
+}
+
+function select(id, scroll) {
+  sel = id;
+  [].forEach.call(document.querySelectorAll(".box"), function (b) {
+    b.classList.toggle("sel", b.dataset.id === id);
+  });
+  [].forEach.call(document.querySelectorAll(".reg"), function (r) {
+    r.classList.toggle("sel", r.dataset.id === id);
+  });
+  var card = document.querySelector(".reg[data-id='" + id + "']");
+  if (card && scroll) card.scrollIntoView({block: "nearest"});
+  var box = document.querySelector("#stage figure:not([style*='none']) .box.sel");
+  if (box && !scroll) box.scrollIntoView({block: "nearest"});
+}
+
+function drawFoot() {
+  var row = page && rowOf(page.stem);
+  $("cmd").textContent = (info && row && row.src)
+    ? 'python host/run.py "' + info.chapter + "/" + row.src + '" --reuse --no-translate'
+    : "—";
+}
+
+// --- сохранение -----------------------------------------------------
+
+function save() {
+  if (!page || !Object.keys(dirty).length) return;
+  api("/api/page", {stem: page.stem, edits: dirty}).then(function (data) {
+    page = data; dirty = {};
+    var row = rowOf(data.stem);
+    if (row) { row.regions = data.regions.length; row.translated = data.translated; }
+    drawPages(); drawRegions(); drawFoot();
+    if (sel) select(sel, false);
+    var extra = data.unknown.length ? (", пропущено чужих id: " + data.unknown.join(", ")) : "";
+    say("Записано в " + data.stem + ".analysis.json: регионов " + data.saved + extra, "ok");
+  }).catch(fail);
+}
+
+function confirmDrop() {
+  return !Object.keys(dirty).length ||
+    confirm("Есть несохранённые правки. Уйти со страницы и потерять их?");
+}
+
+function fail(e) { say(String(e.message || e), "err"); }
+
+// --- настройки прогона ----------------------------------------------
+
+function loadConfig() {
+  if (cfg) return Promise.resolve(cfg);
+  return api("/api/config").then(function (data) {
+    cfg = data;
+    fillSelect("r-lang", data.langs.map(function (l) {
+      return {value: l.code, text: l.code + " — " + l.name};
+    }), data.default_lang);
+    $("r-lang-note").textContent = data.langs_note || "";
+    $("r-lang-note").className = "note" + (data.langs_note ? " warn" : "");
+    fillSelect("r-target-lang", data.targets.map(function (t) {
+      return {value: t.code, text: t.code + " — " + t.name};
+    }), data.default_target);
+    fillSelect("r-provider", data.providers.map(function (p) {
+      return {value: p.name, text: p.name + " — " + p.note};
+    }), data.default_provider);
+    fillFonts();
+    restore();
+    onProvider();
+    onTargetLang();
+    return cfg;
+  });
+}
+
+function fillSelect(id, items, value) {
+  var el = $(id);
+  el.innerHTML = "";
+  items.forEach(function (it) {
+    var o = document.createElement("option");
+    o.value = it.value;
+    o.textContent = it.text;
+    el.appendChild(o);
+  });
+  el.value = value;
+}
+
+function fillFonts() {
+  var want = $("r-font").value || (info && info.font) || cfg.default_font;
+  var target = $("r-target-lang").value || cfg.default_target;
+  var items = cfg.fonts.map(function (f) {
+    var bits = [];
+    if (f.error) bits.push("не разобрался: " + f.error);
+    if (!f.installed) bits.push("НЕ УСТАНОВЛЕН");
+    var gaps = (f.gaps || {})[target] || [];
+    if (gaps.length) bits.push("нет глифов: " + gaps.join(", "));
+    return {value: f.ps || f.family,
+            text: (f.ps || f.family) + (bits.length ? "  (" + bits.join("; ") + ")" : "")};
+  });
+  // Шрифт из отчёта может не лежать в fonts/ — он всё равно нужен в списке,
+  // иначе пересборка старой главы молча уехала бы на другой шрифт.
+  if (!items.some(function (i) { return i.value === want; })) {
+    items.unshift({value: want, text: want + "  (нет в fonts/, проверить нечем)"});
+  }
+  fillSelect("r-font", items, want);
+  onFont();
+}
+
+function onFont() {
+  var name = $("r-font").value;
+  var target = $("r-target-lang").value;
+  var f = cfg.fonts.filter(function (x) { return (x.ps || x.family) === name; })[0];
+  var note = $("r-font-note");
+  if (!f) {
+    note.textContent = "Шрифта нет в fonts/: проверить глифы и установку нечем.";
+    note.className = "note warn";
+    return;
+  }
+  var gaps = (f.gaps || {})[target] || [];
+  var bad = [];
+  if (!f.installed) bad.push("шрифт не установлен в Windows — Photoshop его не увидит");
+  if (gaps.length) bad.push("нет глифов (" + gaps.join(", ") + ") для " + target);
+  note.textContent = bad.length ? bad.join("; ") : (f.family + " " + (f.style || ""));
+  note.className = "note" + (bad.length ? " bad" : "");
+}
+
+function onTargetLang() { fillFonts(); }
+
+function onProvider() {
+  var p = cfg.providers.filter(function (x) { return x.name === $("r-provider").value; })[0];
+  if (!p) return;
+  $("r-model").placeholder = p.model;
+  var note = $("r-provider-note");
+  if (!p.needs_key) {
+    note.textContent = "Без ключа: локальный сервер, модель берётся загруженная.";
+    note.className = "note";
+  } else if (p.key_set) {
+    note.textContent = "Ключ задан (" + p.key_env + ").";
+    note.className = "note";
+  } else {
+    note.textContent = "Нет ключа: задайте переменную " + p.key_env +
+      " и перезапустите serve.py. Без модели можно гнать с no-translate или reuse.";
+    note.className = "note bad";
+  }
+}
+
+function formValues() {
+  return {
+    target: $("r-target").value.trim(), out: $("r-out").value.trim(),
+    font: $("r-font").value, lang: $("r-lang").value,
+    target_lang: $("r-target-lang").value, provider: $("r-provider").value,
+    model: $("r-model").value.trim(), glossary: $("r-glossary").value.trim(),
+    reuse: $("r-reuse").checked, no_translate: $("r-no_translate").checked,
+    erase_only: $("r-erase_only").checked, analyze_only: $("r-analyze_only").checked,
+    limit: $("r-limit").value ? parseInt($("r-limit").value, 10) : null,
+    start: $("r-start").value
+  };
+}
+
+function remember() {
+  var data = {};
+  SETTINGS.forEach(function (id) {
+    var el = $(id);
+    data[id] = el.type === "checkbox" ? el.checked : el.value;
+  });
+  try { localStorage.setItem("manga-tl-run", JSON.stringify(data)); } catch (e) {}
+}
+
+function restore() {
+  var data;
+  try { data = JSON.parse(localStorage.getItem("manga-tl-run") || "{}"); }
+  catch (e) { return; }
+  SETTINGS.forEach(function (id) {
+    if (!data.hasOwnProperty(id)) return;
+    var el = $(id);
+    if (el.type === "checkbox") el.checked = !!data[id];
+    // Сохранённый язык или провайдер мог исчезнуть из образа: молча
+    // подставлять первый попавшийся хуже, чем оставить умолчание.
+    else if (el.tagName !== "SELECT" || hasOption(el, data[id])) el.value = data[id];
+  });
+}
+
+function hasOption(el, value) {
+  return [].some.call(el.options, function (o) { return o.value === value; });
+}
+
+function scan() {
+  var path = $("r-target").value.trim();
+  if (!path) return;
+  var note = $("r-scan-note");
+  note.textContent = "смотрю…";
+  note.className = "note";
+  api("/api/scan?path=" + encodeURIComponent(path)).then(function (data) {
+    note.textContent = "страниц: " + data.count + " (" + data.names[0] + " … " +
+      data.names[data.names.length - 1] + ")";
+    note.className = "note";
+    var keep = $("r-start").value;
+    var items = [{value: "", text: "с первой"}].concat(data.names.map(function (n) {
+      return {value: n, text: n};
+    }));
+    fillSelect("r-start", items, hasOption($("r-start"), keep) ? keep : "");
+    if (!hasOption($("r-start"), keep)) $("r-start").value = "";
+  }).catch(function (e) {
+    note.textContent = String(e.message || e);
+    note.className = "note bad";
+    fillSelect("r-start", [{value: "", text: "с первой"}], "");
+  });
+}
+
+// --- задача ---------------------------------------------------------
+
+function poll() {
+  api("/api/status?since=" + cursor).then(function (data) {
+    var was = job ? job.state : "";
+    job = data;
+    appendLog(data);
+    drawJob();
+    if (data.state === "running") schedule();
+    else if (was === "running") finished(data);
+  }).catch(function () {
+    // Сервер перезапустили или он ещё встаёт: молчим и пробуем снова —
+    // ругань раз в секунду в строке сообщений хуже, чем пауза.
+    schedule();
+  });
+}
+
+function schedule() {
+  clearTimeout(timer);
+  timer = setTimeout(poll, 1000);
+}
+
+function appendLog(data) {
+  if (data.cursor < cursor) { $("log").textContent = ""; cursor = 0; }
+  var log = $("log");
+  var stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 30;
+  data.lines.forEach(function (l) {
+    var el = document.createElement("span");
+    el.className = l.stage === "error" ? "e" : (l.stage === "summary" ? "s" : "");
+    el.textContent = l.text + "\n";
+    log.appendChild(el);
+  });
+  cursor = data.cursor;
+  if (stick) log.scrollTop = log.scrollHeight;
+}
+
+function drawJob() {
+  var s = job.state;
+  var names = {idle: "задач нет", running: "идёт", done: "готово",
+               failed: "ошибка", cancelled: "отменено"};
+  var chip = $("chip");
+  chip.textContent = (job.title ? job.title + ": " : "") + (names[s] || s) +
+    (s === "running" && job.total ? " " + job.done + "/" + job.total : "");
+  chip.className = "chip" + (s === "running" ? " run" : (s === "failed" ? " bad" : ""));
+
+  $("job-title").textContent = job.title || "Задач ещё не было";
+  $("job-counts").textContent = s === "idle" ? "" :
+    (names[s] || s) + ", " + job.done + " из " + job.total +
+    (job.page ? ", сейчас " + job.page : "") + ", " + job.elapsed + " с";
+  $("job-out").textContent = job.out || "";
+  $("bar-fill").style.width = (job.total ? 100 * job.done / job.total : 0) + "%";
+
+  var why = $("why");
+  var text = "";
+  var bad = false;
+  if (job.cancelling) {
+    text = "Отмена запрошена: дорабатываю текущий шаг и выхожу. " +
+      "Оборвать вёрстку внутри Photoshop снаружи нельзя.";
+  } else if (job.error) {
+    text = job.error;
+    bad = true;
+  } else if (job.stop_reason && job.done < job.total) {
+    // Три молчания модели подряд обрывают главу штатно: без этой строки
+    // «запрошено 20, готово 6, состояние: готово» читается как баг.
+    text = "Остановлено раньше конца (" + job.done + " из " + job.total + "): " +
+      job.stop_reason;
+  }
+  why.textContent = text;
+  why.className = text ? ("show" + (bad ? " bad" : "")) : "";
+
+  var busy = s === "running";
+  $("run-go").disabled = busy;
+  $("r-check").disabled = busy;
+  $("r-cancel").disabled = !busy || job.cancelling;
+  markDirty();
+}
+
+function finished(data) {
+  if (data.kind === "retypeset") {
+    // Правок в этот момент нет (кнопка их не пускает), поэтому страницу
+    // просто перечитываем: PNG на диске уже новый.
+    if (page) openPage(page.stem);
+    say("Пересборка: " + data.state, data.state === "done" ? "ok" : "err");
+    return;
+  }
+  if (data.out) {
+    api("/api/open", {out_dir: data.out}).then(function (chapter) {
+      showChapter(chapter);
+      say("Прогон завершён (" + data.state + "), глава открыта в просмотре", "ok");
+    }).catch(fail);
+  }
+}
+
+function startRun() {
+  var v = formValues();
+  if (!v.target) { say("Укажите папку главы", "err"); return; }
+  say("");
+  remember();
+  api("/api/run", v).then(function (data) {
+    cursor = 0; $("log").textContent = ""; job = data;
+    drawJob(); schedule();
+  }).catch(fail);
+}
+
+function retypeset() {
+  if (!page) return;
+  api("/api/retypeset", {stem: page.stem}).then(function (data) {
+    cursor = 0; $("log").textContent = ""; job = data;
+    drawJob(); schedule();
+    say("Пересборка " + page.stem + ": стирание в контейнере и Photoshop, " +
+        "это десятки секунд. Ход — на вкладке «Запуск».", "ok");
+  }).catch(fail);
+}
+
+// --- связки ---------------------------------------------------------
+
+function showTab(which) {
+  tab = which;
+  $("view").style.display = which === "view" ? "" : "none";
+  $("run").className = which === "run" ? "show" : "";
+  $("tab-view").className = which === "view" ? "on" : "";
+  $("tab-run").className = which === "run" ? "on" : "";
+  $("viewhead").style.display = which === "view" ? "" : "none";
+  if (which === "run" && !cfg) loadConfig().catch(fail);
+}
+
+$("tab-view").onclick = function () { showTab("view"); };
+$("tab-run").onclick = function () { showTab("run"); };
+
+$("open").onclick = function () {
+  say("");
+  api("/api/open", {out_dir: $("dir").value.trim()}).then(showChapter).catch(fail);
+};
+$("dir").onkeydown = function (e) { if (e.key === "Enter") $("open").onclick(); };
+$("save").onclick = save;
+$("retype").onclick = retypeset;
+$("prev").onclick = function () { step(-1); };
+$("next").onclick = function () { step(1); };
+[].forEach.call(document.querySelectorAll("#bar button[data-mode]"), function (b) {
+  b.onclick = function () { mode = b.dataset.mode; applyMode(); };
+});
+
+$("r-scan").onclick = scan;
+$("r-target").onkeydown = function (e) { if (e.key === "Enter") scan(); };
+$("r-provider").onchange = function () { onProvider(); remember(); };
+$("r-font").onchange = function () { onFont(); remember(); };
+$("r-target-lang").onchange = function () { onTargetLang(); remember(); };
+SETTINGS.forEach(function (id) {
+  var el = $(id);
+  if (el.type === "checkbox") el.onchange = remember;
+  else el.onblur = remember;
+});
+$("run-go").onclick = startRun;
+$("r-cancel").onclick = function () {
+  api("/api/cancel", {}).then(function (data) { job = data; drawJob(); }).catch(fail);
+};
+$("r-check").onclick = function () {
+  var v = formValues();
+  say("проверяю…");
+  api("/api/check", v).then(function (data) {
+    var head = "движок: " + data.engine +
+      (data.cv ? ", контейнер: " + data.cv.detector + ", tesseract " + data.cv.tesseract : "");
+    say(data.ok ? "Всё на месте. " + head : (data.problems.join(" | ") + "  [" + head + "]"),
+        data.ok ? "ok" : "err");
+  }).catch(fail);
+};
+
+document.onkeydown = function (e) {
+  if (e.ctrlKey && e.key === "s") { e.preventDefault(); save(); return; }
+  if (tab !== "view") return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  if (e.key === "ArrowLeft") step(-1);
+  else if (e.key === "ArrowRight") step(1);
+  else if (e.key === "Home" && pages.length) openPage(pages[0].stem);
+  else if (e.key === "End" && pages.length) openPage(pages[pages.length - 1].stem);
+  else if (e.key === "1" || e.key === "2" || e.key === "3") {
+    mode = ["src", "out", "both"][e.key - 1];
+    applyMode();
+  }
+};
+window.onbeforeunload = function (e) {
+  if (Object.keys(dirty).length) { e.preventDefault(); return ""; }
+};
+
+// Сервер мог быть запущен с папкой в аргументе — тогда глава уже открыта.
+api("/api/pages").then(showChapter).catch(function () {
+  try { $("dir").value = localStorage.getItem("manga-tl-out") || ""; } catch (e) {}
+  $("dir").focus();
+});
+// Прогон переживает перезагрузку вкладки: состояние и лог лежат на сервере.
+poll();
+</script>
+</body>
+</html>

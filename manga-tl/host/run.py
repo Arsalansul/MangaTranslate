@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import time
+import types
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +27,35 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Модель, которая не ответила столько страниц подряд, не ответит и на
 # остальные: лимит или неверное имя не рассасываются сами.
 MAX_TRANSLATE_FAILS = 3
+
+
+class Cancelled(Exception):
+    """Прогон остановлен снаружи, а не сломался.
+
+    Отдельный тип нужен, чтобы отмена не попала в общий except и не была
+    записана как «одна упавшая страница», после которой глава едет дальше.
+    """
+
+
+def _plain(msg, stage=None, quiet=False, **kw):
+    """Прогресс в консоль: всё, кроме самой строки, здесь не нужно.
+
+    `**kw` не про запас: веб-слой добавляет к вызовам свои поля (номер
+    страницы, доля готового), и без него такой вызов уронил бы главу
+    TypeError'ом посреди прогона.
+    """
+    print(msg)
+
+
+def _stop(should_stop):
+    """Точка, в которой прогон соглашается остановиться.
+
+    Жёстко прервать нельзя: DoJavaScript крутится внутри Photoshop и
+    переживёт смерть нашего процесса, а следующий вызов упрётся в занятое
+    приложение. Поэтому отмена — всегда «доработаю шаг и выйду».
+    """
+    if should_stop is not None and should_stop():
+        raise Cancelled()
 
 
 def _norm(p):
@@ -46,6 +76,58 @@ def list_pages(full_dir):
     return names
 
 
+def settings(target, out=None, font=bridge.DEFAULT_FONT,
+             lang=translate.DEFAULT_SOURCE, target_lang=translate.DEFAULT_TARGET,
+             provider=translate.DEFAULT_PROVIDER, model=None, api_key=None,
+             api_url=None, glossary=None, reuse=False, no_translate=False,
+             erase_only=False, analyze_only=False, limit=None, start=None):
+    """Настройки прогона одним объектом — и из argparse, и из кода.
+
+    Единственное место, где перечислены все настройки и их умолчания: иначе
+    веб-слою пришлось бы повторять список argparse и расходиться с ним.
+    Имена полей — как у флагов, чтобы settings(**vars(p.parse_args()))
+    проходил без перекладывания.
+    """
+    return types.SimpleNamespace(
+        target=target, out=out, font=font, lang=lang, target_lang=target_lang,
+        provider=provider, model=model, api_key=api_key, api_url=api_url,
+        glossary=glossary, reuse=reuse, no_translate=no_translate,
+        erase_only=erase_only, analyze_only=analyze_only, limit=limit, start=start)
+
+
+def resolve(args):
+    """Что именно гоним: папка главы, список страниц, куда складывать."""
+    full_dir = _norm(args.target)
+    if not os.path.exists(full_dir):
+        raise SystemExit("Нет такого пути: " + full_dir)
+    if os.path.isfile(full_dir):
+        # Одна страница — тот же прогон, просто список из одного имени.
+        full_dir, names = os.path.dirname(full_dir), [os.path.basename(full_dir)]
+    else:
+        names = list_pages(full_dir)
+
+    if args.start:
+        if args.start not in names:
+            raise SystemExit("Нет такой страницы в главе: " + args.start)
+        names = names[names.index(args.start):]
+    if args.limit:
+        names = names[:args.limit]
+
+    out_dir = _norm(args.out or os.path.join(HERE, "..", "out", os.path.basename(full_dir)))
+    os.makedirs(out_dir, exist_ok=True)
+    return full_dir, names, out_dir
+
+
+def prepare(args):
+    """Всё, что должно быть готово до первой страницы: движок, проверки, глоссарий."""
+    engine = translate.Engine(args.provider, model=args.model,
+                              api_key=args.api_key, url=args.api_url,
+                              src_lang=args.lang, target=args.target_lang)
+    health = preflight(args, engine)
+    glossary = translate.load_glossary(args.glossary)
+    return engine, glossary, health
+
+
 def preflight(args, engine):
     """Проверяем всё, что можно проверить, до первой страницы.
 
@@ -59,6 +141,16 @@ def preflight(args, engine):
             "CV-контейнер недоступен по %s: %s\n"
             "Поднять: docker compose up -d" % (bridge.CV_URL, e))
 
+    # Словаря может не быть в образе: тогда Tesseract молча вернёт пустые
+    # регионы, и страница выйдет чистой без единой ошибки. Ловим здесь.
+    # Старый контейнер списка не отдаёт — тогда проверять нечего.
+    langs = h.get("langs") or []
+    if langs and args.lang not in langs:
+        raise SystemExit(
+            "В образе нет словаря '%s'. Есть: %s\n"
+            "Добавить пакет tesseract-ocr-%s в container/Dockerfile и пересобрать."
+            % (args.lang, ", ".join(langs), args.lang.replace("_", "-")))
+
     if not (args.no_translate or args.erase_only or args.reuse):
         try:
             engine.check()
@@ -67,7 +159,9 @@ def preflight(args, engine):
     return h
 
 
-def process(name, full_dir, out_dir, args, engine, glossary):
+def process(name, full_dir, out_dir, args, engine, glossary,
+            report=_plain, should_stop=None):
+    _stop(should_stop)
     src = os.path.join(full_dir, name)
     stem = os.path.splitext(name)[0]
     apath = os.path.join(out_dir, stem + ".analysis.json")
@@ -84,7 +178,7 @@ def process(name, full_dir, out_dir, args, engine, glossary):
 
     row["regions"] = len(analysis["regions"])
     for w in analysis.get("warnings", []):
-        print("       ! " + w)
+        report("       ! " + w, stage="detect", quiet=True)
     if not analysis["regions"]:
         row["note"] = "текст не найден"
         return row
@@ -114,7 +208,8 @@ def process(name, full_dir, out_dir, args, engine, glossary):
             # таблице у страницы окажется ноль регионов, хотя детект их нашёл.
             e.row = row
             raise
-    print("       регионов %d, с переводом %d" % (row["regions"], row["translated"]))
+    report("       регионов %d, с переводом %d" % (row["regions"], row["translated"]),
+           stage="translate")
 
     # Сохраняем до Photoshop: если он упадёт, перевод не потеряется.
     _save(apath, analysis)
@@ -128,30 +223,83 @@ def process(name, full_dir, out_dir, args, engine, glossary):
     # Стирает контейнер: ровный фон заливкой, текст поверх рисунка — моделью.
     # Photoshop раньше делал то же Content-Aware Fill'ом, но тот собирает
     # заплатку из кусков страницы, а страница в этот момент ещё в тексте.
+    _stop(should_stop)
     page, erase_ids = src, None
     try:
         cl = bridge.clean(analysis, src, os.path.join(out_dir, stem + ".clean.png"),
                           force=args.erase_only)
         page, erase_ids = cl["path"], cl["left"]
-        print("       стёрто: ровных %d, поверх арта %d (проходов %d)%s"
-              % (cl["flat"], cl["art"], cl["passes"],
-                 ", Photoshop'у осталось %d" % len(cl["left"]) if cl["left"] else ""))
+        report("       стёрто: ровных %d, поверх арта %d (проходов %d)%s"
+               % (cl["flat"], cl["art"], cl["passes"],
+                  ", Photoshop'у осталось %d" % len(cl["left"]) if cl["left"] else ""),
+               stage="erase")
     except urllib.error.URLError as e:
         # Старый контейнер без /inpaint или он не ответил — стирает Photoshop,
         # как до сих пор. Хуже, но страница всё равно выйдет.
-        print("       стирание в контейнере не вышло (%s), стирает Photoshop" % e)
+        report("       стирание в контейнере не вышло (%s), стирает Photoshop" % e,
+               stage="erase", quiet=True)
 
     # --- вёрстка -------------------------------------------------------
+    _stop(should_stop)
     res = bridge.render(analysis, src, out_dir, font=args.font,
                         erase_only=args.erase_only, page_img=page,
-                        erase_ids=erase_ids)
+                        erase_ids=erase_ids, lang=args.target_lang)
     fails = [s for s in res["report"] if not s["ok"]]
     row["ok"] = not fails
     if fails:
         row["note"] = "; ".join("%s: %s" % (s["step"], s["info"][:60]) for s in fails[:3])
         for s in fails:
-            print("       FAIL %-14s %s" % (s["step"], s["info"][:90]))
+            report("       FAIL %-14s %s" % (s["step"], s["info"][:90]), stage="render")
     return row
+
+
+def run_chapter(names, full_dir, out_dir, args, engine, glossary,
+                report=_plain, should_stop=None):
+    rows = []
+    tl_fails = 0
+    for i, name in enumerate(names, 1):
+        try:
+            _stop(should_stop)
+            report("[%d/%d] %s" % (i, len(names), name), stage="page")
+            row = process(name, full_dir, out_dir, args, engine, glossary,
+                          report=report, should_stop=should_stop)
+            tl_fails = 0
+        except KeyboardInterrupt:
+            report("\nпрервано; сделанное лежит в " + out_dir, stage="summary")
+            break
+        except Cancelled:
+            # Раньше общего except: иначе отмена станет «упавшей страницей»,
+            # и глава поедет дальше — ровно то, чего у нас не просили.
+            report("\nотменено; сделанное лежит в " + out_dir, stage="summary")
+            break
+        except translate.TranslateError as e:
+            # Перевод отказал — это про всю главу, а не про эту страницу.
+            tl_fails += 1
+            row = getattr(e, "row", None) or {"page": name, "regions": 0,
+                                              "translated": 0, "ok": False}
+            row["note"] = "перевод: " + str(e).splitlines()[0][:60]
+            report("       ОШИБКА перевода: %s" % e, stage="page")
+        except Exception as e:
+            # Одна испорченная страница не должна ронять главу: остальные
+            # всё равно нужны, а к этой вернёмся через --start.
+            row = {"page": name, "regions": 0, "translated": 0, "ok": False,
+                   "note": "%s: %s" % (type(e).__name__, e)}
+            report("       ОШИБКА: %s" % e, stage="page")
+        rows.append(row)
+        if tl_fails >= MAX_TRANSLATE_FAILS:
+            report("\nМодель молчит %d страницы подряд — останавливаюсь, чтобы не\n"
+                   "перемалывать главу впустую. Смените --model и запустите с\n"
+                   "--reuse: разметка уже на диске, детект не повторится."
+                   % tl_fails, stage="summary")
+            break
+    return rows
+
+
+def write_report(out_dir, full_dir, args, engine, rows):
+    with open(os.path.join(out_dir, "run.report.json"), "w", encoding="utf-8") as f:
+        json.dump({"chapter": full_dir, "out": out_dir, "font": args.font,
+                   "lang": args.lang, "target_lang": args.target_lang,
+                   "engine": engine.describe(), "pages": rows}, f, ensure_ascii=False, indent=2)
 
 
 def main():
@@ -163,7 +311,12 @@ def main():
     p.add_argument("--out", help="куда складывать результат (по умолчанию out/<имя папки>)")
     p.add_argument("--font", default=bridge.DEFAULT_FONT,
                    help="PostScript-имя шрифта; список: python host/fontcheck.py")
-    p.add_argument("--lang", default="eng", help="язык OCR (eng)")
+    p.add_argument("--lang", default=translate.DEFAULT_SOURCE,
+                   choices=sorted(translate.SOURCES),
+                   help="язык исходника: чем распознавать и с чего переводить")
+    p.add_argument("--target-lang", default=translate.DEFAULT_TARGET,
+                   choices=sorted(translate.TARGETS),
+                   help="язык перевода")
     p.add_argument("--provider", default=translate.DEFAULT_PROVIDER,
                    choices=sorted(translate.BACKENDS),
                    help="кто переводит; список: python host/translate.py")
@@ -179,70 +332,24 @@ def main():
     p.add_argument("--analyze-only", action="store_true", help="не трогать Photoshop вовсе")
     p.add_argument("--limit", type=int, help="первые N страниц")
     p.add_argument("--start", help="начать с этой страницы, например 0007.jpeg")
-    args = p.parse_args()
+    args = settings(**vars(p.parse_args()))
 
-    full_dir = _norm(args.target)
-    if not os.path.exists(full_dir):
-        raise SystemExit("Нет такого пути: " + full_dir)
-    if os.path.isfile(full_dir):
-        # Одна страница — тот же прогон, просто список из одного имени.
-        full_dir, names = os.path.dirname(full_dir), [os.path.basename(full_dir)]
-    else:
-        names = list_pages(full_dir)
-
-    if args.start:
-        if args.start not in names:
-            raise SystemExit("Нет такой страницы в главе: " + args.start)
-        names = names[names.index(args.start):]
-    if args.limit:
-        names = names[:args.limit]
-
-    out_dir = _norm(args.out or os.path.join(HERE, "..", "out", os.path.basename(full_dir)))
-    os.makedirs(out_dir, exist_ok=True)
-
-    engine = translate.Engine(args.provider, model=args.model,
-                              api_key=args.api_key, url=args.api_url)
-    h = preflight(args, engine)
-    glossary = translate.load_glossary(args.glossary)
+    full_dir, names, out_dir = resolve(args)
+    engine, glossary, h = prepare(args)
 
     print("глава:   %s" % full_dir)
     print("выход:   %s" % out_dir)
-    print("детект:  %s, OCR: %s, шрифт: %s" % (h["detector"], h["ocr"], args.font))
+    # OCR из /health отчитывается языком по умолчанию; фактический язык
+    # страницы — тот, что мы просим, поэтому показываем его, а не ответ.
+    print("детект:  %s, OCR: tesseract-%s, шрифт: %s" % (h["detector"], args.lang, args.font))
+    print("языки:   %s -> %s" % (args.lang, args.target_lang))
     print("перевод: %s" % engine.describe())
     if glossary:
         print("глоссарий: %d записей" % len(glossary))
     print("страниц: %d\n" % len(names))
 
-    rows, t0 = [], time.time()
-    tl_fails = 0
-    for i, name in enumerate(names, 1):
-        print("[%d/%d] %s" % (i, len(names), name))
-        try:
-            row = process(name, full_dir, out_dir, args, engine, glossary)
-            tl_fails = 0
-        except KeyboardInterrupt:
-            print("\nпрервано; сделанное лежит в " + out_dir)
-            break
-        except translate.TranslateError as e:
-            # Перевод отказал — это про всю главу, а не про эту страницу.
-            tl_fails += 1
-            row = getattr(e, "row", None) or {"page": name, "regions": 0,
-                                              "translated": 0, "ok": False}
-            row["note"] = "перевод: " + str(e).splitlines()[0][:60]
-            print("       ОШИБКА перевода: %s" % e)
-        except Exception as e:
-            # Одна испорченная страница не должна ронять главу: остальные
-            # всё равно нужны, а к этой вернёмся через --start.
-            row = {"page": name, "regions": 0, "translated": 0, "ok": False,
-                   "note": "%s: %s" % (type(e).__name__, e)}
-            print("       ОШИБКА: %s" % e)
-        rows.append(row)
-        if tl_fails >= MAX_TRANSLATE_FAILS:
-            print("\nМодель молчит %d страницы подряд — останавливаюсь, чтобы не\n"
-                  "перемалывать главу впустую. Смените --model и запустите с\n"
-                  "--reuse: разметка уже на диске, детект не повторится."
-                  % tl_fails)
-            break
+    t0 = time.time()
+    rows = run_chapter(names, full_dir, out_dir, args, engine, glossary)
 
     bad = [r for r in rows if not r["ok"]]
     print("\n%-22s %7s %7s  %s" % ("страница", "регион", "перев", "заметка"))
@@ -252,9 +359,7 @@ def main():
     print("\nготово %d из %d за %d с -> %s"
           % (len(rows) - len(bad), len(rows), int(time.time() - t0), out_dir))
 
-    with open(os.path.join(out_dir, "run.report.json"), "w", encoding="utf-8") as f:
-        json.dump({"chapter": full_dir, "out": out_dir, "font": args.font,
-                   "engine": engine.describe(), "pages": rows}, f, ensure_ascii=False, indent=2)
+    write_report(out_dir, full_dir, args, engine, rows)
     return 1 if bad else 0
 
 
