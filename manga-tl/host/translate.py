@@ -86,6 +86,97 @@ BACKENDS = {
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MODEL = BACKENDS[DEFAULT_PROVIDER]["model"]
 
+# Подсказки про ошибки OCR отличаются не по языку, а по письменности: у
+# капсовой латиницы путаются O/0 и I/l, у иероглифов — начертания, и один
+# набор грабель на всех не натянуть.
+_OCR_LATIN = (
+    "- Исходник распознан OCR с капса, поэтому в нём бывают подмены: O/0, I/l,\n"
+    "  D/O, склеенные и разорванные слова. Восстанавливай по смыслу молча."
+)
+_OCR_HANGUL = (
+    "- Исходник распознан OCR, поэтому в нём бывают ошибки письма: похожие\n"
+    "  начертанием чамо и слоги (ㅁ/ㅇ, ㅜ/ㅠ, ㅌ/ㄷ, 己/2), лишние пробелы\n"
+    "  внутри слова и потерянные знаки препинания. Восстанавливай по смыслу\n"
+    "  молча."
+)
+_OCR_HAN = (
+    "- Исходник распознан OCR, поэтому в нём бывают ошибки письма: визуально\n"
+    "  похожие иероглифы (己/已/巳, 千/干, 未/末, 人/入), лишние пробелы между\n"
+    "  знаками и потерянные знаки препинания. Восстанавливай по смыслу молча."
+)
+
+# Исходники. Ключ — код Tesseract, тот же, что уходит в OCR контейнера.
+# name в родительном падеже: он встаёт и в «переводишь с ...», и в
+# «... длиннее ...», так что форма нужна одна.
+SOURCES = {
+    "eng": {"name": "английского", "ocr": _OCR_LATIN},
+    "fra": {"name": "французского", "ocr": _OCR_LATIN},
+    "deu": {"name": "немецкого", "ocr": _OCR_LATIN},
+    "spa": {"name": "испанского", "ocr": _OCR_LATIN},
+    "ita": {"name": "итальянского", "ocr": _OCR_LATIN},
+    "por": {"name": "португальского", "ocr": _OCR_LATIN},
+    "kor": {"name": "корейского", "ocr": _OCR_HANGUL},
+    "chi_sim": {"name": "китайского (упрощённого)", "ocr": _OCR_HAN},
+    "chi_tra": {"name": "китайского (традиционного)", "ocr": _OCR_HAN},
+}
+
+# Целевые языки. КОНТРАКТ: ключи ровно "ru" и "en", поля name / ps_lang /
+# glyphs. На эту таблицу смотрят и вёрстка (ps_lang), и проверка шрифта
+# (glyphs), поэтому менять имена полей нельзя не предупредив.
+#
+# ps_lang — идентификатор языка Photoshop для textLanguage. Photoshop на
+# неизвестное значение не ругается, а молча оставляет прежний язык, поэтому
+# каждое значение здесь должно быть сверено на живом Photoshop через
+# languageOf() в jsxgen.py: она кладёт фактический язык в report.json.
+TARGETS = {
+    "ru": {
+        "name": "русский",
+        "ps_lang": "russianLanguage",  # сверено: languageOf() отдаёт его же
+        # Латиница нужна и для русской страницы: имена, «OK», номера глав.
+        "glyphs": ("cyrillic", "latin", "digits", "punct"),
+    },
+    "en": {
+        "name": "английский",
+        # Сверено: englishUSALanguage по аналогии с russianLanguage НЕ
+        # подходит — Photoshop его молча игнорирует. Контрольный прогон с
+        # заведомой чушью дал тот же ответ, что и с englishUSALanguage,
+        # то есть оба раза вставало умолчание. Верный идентификатор короче.
+        "ps_lang": "englishLanguage",
+        "glyphs": ("latin", "digits", "punct"),
+    },
+}
+
+DEFAULT_SOURCE = "eng"
+DEFAULT_TARGET = "ru"
+
+# Во сколько раз перевод длиннее оригинала. Зависит от пары, а не от одного
+# языка: с иероглифов растягивает сильнее всего (знак плотнее любой буквенной
+# записи), с корейского — заметно, с английского — умеренно. Запасное
+# значение для пар, которых тут нет.
+DEFAULT_RATIO = 1.3
+RATIOS = {
+    ("eng", "ru"): 1.3,
+    ("kor", "ru"): 1.6,
+    ("kor", "en"): 1.5,
+    ("chi_sim", "ru"): 1.9,
+    ("chi_tra", "ru"): 1.9,
+    ("chi_sim", "en"): 1.7,
+    ("chi_tra", "en"): 1.7,
+}
+
+# Промпт написан по-русски — его читает и правит владелец проекта, а не
+# модель-носитель. Для английского результата это опасно: модель тянет
+# многословие самого промпта в перевод, поэтому цель проговаривается отдельно.
+TARGET_NOTES = {
+    "ru": "",
+    "en": (
+        "\n- Промпт написан по-русски, но переводишь ты на английский:"
+        " значения в\n  JSON — английский текст. Не тяни в него русскую"
+        " многословность, не\n  удлиняй фразу и не добавляй слов, которых"
+        " нет в оригинале."
+    ),
+}
+
 # Регион переводится, если в нём есть что переводить и он не звук.
 # SFX намеренно пропускаем: без перевода регион не стирается вовсе,
 # и мазок остаётся на странице как есть.
@@ -104,17 +195,16 @@ def translatable(region: dict) -> bool:
     )
 
 
-PROMPT = """Ты переводишь комикс с английского на русский.
+PROMPT = """Ты переводишь комикс с %(src)s на %(dst)s.
 
 Перед тобой все реплики одной страницы по порядку чтения. Переводи их как
 связный диалог, а не по отдельности: реплика получает смысл от соседних.
 
 Правила:
 - Живая разговорная речь, а не подстрочник. Это комикс, а не документ.
-- Русский длиннее английского, а место в пузыре ограничено. Держись в
-  пределах примерно 1.3 длины оригинала; где можно сказать короче — говори.
-- Исходник распознан OCR с капса, поэтому в нём бывают подмены: O/0, I/l,
-  D/O, склеенные и разорванные слова. Восстанавливай по смыслу молча.
+- %(dst_cap)s длиннее %(src)s, а место в пузыре ограничено. Держись в
+  пределах примерно %(ratio)s длины оригинала; где можно сказать короче — говори.
+%(ocr)s%(note)s
 - Многоточия, восклицания и обрывы фраз сохраняй: это интонация.
 - Регистр не меняй — его выставит вёрстка.
 - Текст с переносами строк — это список: содержание, титры, подпись. Верни
@@ -130,7 +220,58 @@ PROMPT = """Ты переводишь комикс с английского н�
 %(items)s"""
 
 
-def _payload(regions, glossary):
+def source_info(src_lang: str) -> dict:
+    try:
+        return SOURCES[src_lang]
+    except KeyError:
+        raise TranslateError(
+            "Неизвестный язык оригинала %r. Есть: %s"
+            % (src_lang, ", ".join(sorted(SOURCES))))
+
+
+def target_info(target: str) -> dict:
+    try:
+        return TARGETS[target]
+    except KeyError:
+        raise TranslateError(
+            "Неизвестный целевой язык %r. Есть: %s"
+            % (target, ", ".join(sorted(TARGETS))))
+
+
+def ps_language(target: str = DEFAULT_TARGET) -> str:
+    """Короткий код целевого языка -> идентификатор языка Photoshop."""
+    return target_info(target)["ps_lang"]
+
+
+def glyph_sets(target: str = DEFAULT_TARGET) -> tuple:
+    """Какие наборы глифов обязан покрывать шрифт для этого языка."""
+    return tuple(target_info(target)["glyphs"])
+
+
+def ratio(src_lang: str = DEFAULT_SOURCE, target: str = DEFAULT_TARGET) -> float:
+    return RATIOS.get((src_lang, target), DEFAULT_RATIO)
+
+
+def build_prompt(src_lang: str = DEFAULT_SOURCE, target: str = DEFAULT_TARGET,
+                 glossary: str = "", items: str = "") -> str:
+    """Промпт под конкретную пару языков. Сам текст задания остаётся русским."""
+    src = source_info(src_lang)
+    dst = target_info(target)
+    name = dst["name"]
+    return PROMPT % {
+        "src": src["name"],
+        "dst": name,
+        "dst_cap": name[:1].upper() + name[1:],
+        "ratio": "%g" % ratio(src_lang, target),
+        "ocr": src["ocr"],
+        "note": TARGET_NOTES.get(target, ""),
+        "glossary": glossary,
+        "items": items,
+    }
+
+
+def _payload(regions, glossary, src_lang: str = DEFAULT_SOURCE,
+             target: str = DEFAULT_TARGET):
     items = []
     for r in regions:
         items.append({
@@ -144,10 +285,11 @@ def _payload(regions, glossary):
     if glossary:
         pairs = "\n".join("  %s -> %s" % (k, v) for k, v in glossary.items())
         gl = "\nГлоссарий, соблюдать дословно:\n%s\n" % pairs
-    return PROMPT % {
-        "glossary": gl,
-        "items": json.dumps(items, ensure_ascii=False, indent=1),
-    }
+    return build_prompt(
+        src_lang, target,
+        glossary=gl,
+        items=json.dumps(items, ensure_ascii=False, indent=1),
+    )
 
 
 _PAIR = re.compile(r'"([\w.:-]+)"\s*:\s*"(.*?)"\s*(?=,\s*"|\s*\}|\s*$)', re.S)
@@ -188,11 +330,19 @@ class Engine:
     """Один провайдер перевода: куда стучаться, чем и под каким ключом."""
 
     def __init__(self, provider: str = DEFAULT_PROVIDER, model: str = None,
-                 api_key: str = None, url: str = None, timeout: int = 180):
+                 api_key: str = None, url: str = None, timeout: int = 180,
+                 src_lang: str = DEFAULT_SOURCE, target: str = DEFAULT_TARGET):
         if provider not in BACKENDS:
             raise TranslateError(
                 "Неизвестный провайдер %r. Есть: %s"
                 % (provider, ", ".join(sorted(BACKENDS))))
+        # Пара языков живёт на движке, а не на вызове: она одна на всю главу.
+        # Проверяем сразу — ошибиться в коде языка дешевле здесь, чем на
+        # сотой странице.
+        source_info(src_lang)
+        target_info(target)
+        self.src_lang = src_lang
+        self.target = target
         cfg = BACKENDS[provider]
         self.provider = provider
         self.kind = cfg["kind"]
@@ -352,7 +502,8 @@ class Engine:
     # --- то, ради чего всё -------------------------------------------
 
     def translate_page(self, analysis: dict, glossary: dict = None,
-                       keep_filled: bool = False) -> int:
+                       keep_filled: bool = False, src_lang: str = None,
+                       target: str = None) -> int:
         """Проставляет translation в подходящих регионах. Возвращает их число.
 
         keep_filled бережёт уже заполненное: перевод в analysis.json могли
@@ -365,7 +516,9 @@ class Engine:
         if keep_filled and all((r.get("translation") or "").strip() for r in targets):
             return 0
 
-        got = _parse(self._call(_payload(targets, glossary)))
+        got = _parse(self._call(_payload(
+            targets, glossary,
+            src_lang or self.src_lang, target or self.target)))
 
         filled = 0
         for r in targets:
@@ -401,6 +554,16 @@ def providers_help() -> str:
     return "\n".join(rows)
 
 
+def languages_help() -> str:
+    rows = ["  оригинал (--lang): " + ", ".join(sorted(SOURCES)),
+            "  перевод:"]
+    for code in sorted(TARGETS):
+        t = TARGETS[code]
+        rows.append("    %-3s %-10s Photoshop: %-18s глифы: %s"
+                    % (code, t["name"], t["ps_lang"], ", ".join(t["glyphs"])))
+    return "\n".join(rows)
+
+
 def openrouter_free_models(limit: int = 20) -> list:
     """Бесплатные модели OpenRouter живьём.
 
@@ -421,5 +584,6 @@ if __name__ == "__main__":
             print("  %-52s контекст %s" % (m["id"], m.get("context_length") or "?"))
     else:
         print("Провайдеры перевода:\n" + providers_help())
+        print("\nЯзыки:\n" + languages_help())
         print("\nБесплатные модели OpenRouter меняются; свежий список:"
               "\n  python host/translate.py openrouter")

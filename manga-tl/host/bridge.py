@@ -22,6 +22,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import jsxgen
+import translate  # таблица целевых языков живёт там, где промпт
 
 CV_URL = os.environ.get("MANGA_TL_CV", "http://127.0.0.1:8765")
 SEP = os.sep
@@ -160,7 +161,7 @@ DEFAULT_FONT = "NMDozor-Regular"
 
 def render(analysis: dict, src_img: str, out_dir: str, font: str = DEFAULT_FONT,
            erase_only: bool = False, page_img: str = None,
-           erase_ids: list = None) -> dict:
+           erase_ids: list = None, lang: str = translate.DEFAULT_TARGET) -> dict:
     """Верстает переводы поверх уже стёртой страницы; пути и отчёт по шагам.
 
     page_img — что открыть в Photoshop. Обычно это чистая копия из
@@ -169,6 +170,11 @@ def render(analysis: dict, src_img: str, out_dir: str, font: str = DEFAULT_FONT,
 
     erase_ids — что Photoshop всё-таки стирает сам. Пустой список значит
     «всё стёрто до меня», None — стирать здесь всё, как было раньше.
+
+    lang — короткий код целевого языка ("ru" / "en"), как в translate.TARGETS.
+    Наружу ходит именно он, а не идентификатор Photoshop: тот длинный, его
+    легко перепутать, и Photoshop на опечатку молча оставит прежний язык.
+    Фактически выставленный язык видно в отчёте, шаг typeset_all, lang=...
     """
     os.makedirs(out_dir, exist_ok=True)
     stem = os.path.splitext(os.path.basename(src_img))[0]
@@ -179,7 +185,7 @@ def render(analysis: dict, src_img: str, out_dir: str, font: str = DEFAULT_FONT,
     jsx = jsxgen.build(
         src_img=_fwd(page_img or src_img), psd_out=_fwd(psd), png_out=_fwd(png), report_out=_fwd(rep),
         regions=analysis["regions"], font=font, erase_only=erase_only,
-        erase_ids=erase_ids,
+        lang=translate.ps_language(lang), erase_ids=erase_ids,
     )
     result = run_jsx(jsx)
 

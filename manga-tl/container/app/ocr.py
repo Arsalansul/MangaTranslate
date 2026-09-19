@@ -7,7 +7,7 @@ v1 — Tesseract. Выбран не потому, что лучший, а пот
 
 Смена движка не должна менять Region — see app/schema.py.
 """
-from typing import List
+from typing import List, Optional
 import cv2
 import numpy as np
 import pytesseract
@@ -15,13 +15,48 @@ from pytesseract import Output
 
 from .schema import Region
 
-OCR_NAME = "tesseract-eng-v1"
+OCR_VERSION = "v1"
+DEFAULT_LANG = "eng"
+
+# У этих письменностей пробела между словами нет, и Tesseract отдаёт
+# отдельным «словом» чуть ли не каждый знак. Склеенные через пробел, они
+# превращаются в текст с дырами — и для перевода, и для вёрстки. Корейский
+# сюда не входит: там пробелы настоящие, их надо сохранить.
+NO_SPACE_LANGS = ("chi_sim", "chi_tra", "jpn")
 
 # Tesseract заметно точнее на увеличенном изображении: комикс-текст
 # в вебтуне часто мельче, чем то, на чём модель обучалась.
 UPSCALE = 2.0
 PSM_BLOCK = 6   # единый блок текста
 PSM_LINE = 7    # одна строка
+
+
+def ocr_name(lang: str = DEFAULT_LANG) -> str:
+    """Имя движка вместе с языком.
+
+    Язык — часть того, чем распознавали: страница, прочитанная корейским
+    словарём, не должна отчитываться английской, иначе по сохранённому
+    analysis.json не понять, почему текст вышел кашей.
+    """
+    return "tesseract-%s-%s" % (lang or DEFAULT_LANG, OCR_VERSION)
+
+
+# Язык страницы в /health ещё неизвестен, там имя движка без него.
+OCR_NAME = ocr_name()
+
+
+def _word_sep(lang: str) -> str:
+    # Язык может прийти связкой ("chi_sim+eng"); ведущий в ней и определяет
+    # письменность страницы.
+    return "" if (lang or "").split("+")[0] in NO_SPACE_LANGS else " "
+
+
+def _no_dictionary(err: str) -> bool:
+    """Отличает «нет словаря» от прочих бед Tesseract'а."""
+    low = err.lower()
+    return ("tessdata" in low
+            or "failed loading language" in low
+            or "couldn't load any languages" in low)
 
 
 def _prep(crop: np.ndarray) -> np.ndarray:
@@ -34,8 +69,10 @@ def _prep(crop: np.ndarray) -> np.ndarray:
     return cv2.copyMakeBorder(binimg, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=255)
 
 
-def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = "eng") -> List[Region]:
+def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = DEFAULT_LANG,
+                 warnings: Optional[List[str]] = None) -> List[Region]:
     H, W = img_bgr.shape[:2]
+    sep = _word_sep(lang)
     for r in regions:
         x, y, w, h = r.bbox
         x, y = max(0, x), max(0, y)
@@ -49,6 +86,20 @@ def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = "eng") 
 
         try:
             data = pytesseract.image_to_data(prepped, lang=lang, config=cfg, output_type=Output.DICT)
+        except pytesseract.TesseractError as e:
+            if _no_dictionary(str(e)):
+                # Без словаря падает не эта страница, а все: дальше читать
+                # нечем. Молча вернуть пустые регионы с conf 0 — худшее, что
+                # можно сделать: выглядит как нечитаемая глава, а не как
+                # незакрытый apt-get.
+                if warnings is not None:
+                    warnings.append(
+                        "Tesseract не нашёл словарь языка '%s' — страница не "
+                        "распознана. Нужен пакет tesseract-ocr-%s в образе."
+                        % (lang, lang.replace("_", "-")))
+                break
+            r.text, r.conf = "", 0.0
+            continue
         except Exception:
             r.text, r.conf = "", 0.0
             continue
@@ -78,9 +129,9 @@ def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = "eng") 
                     lines.append([])
                     prev = key
                 lines[-1].append(word)
-            r.text = "\n".join(" ".join(w) for w in lines)
+            r.text = "\n".join(sep.join(w) for w in lines)
         else:
-            r.text = " ".join(words)
+            r.text = sep.join(words)
         r.conf = round(float(np.mean(confs)) / 100.0, 3) if confs else 0.0
 
         letters = [ch for ch in r.text if ch.isalpha()]

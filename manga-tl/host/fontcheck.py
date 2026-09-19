@@ -18,7 +18,11 @@ Photoshop покажет его в списке, а на месте русски
 системном Python без зависимостей, и тянуть ради одной таблицы fontTools
 означало бы заводить venv на хосте.
 
-    python host/fontcheck.py [путь к файлу или папке]
+    python host/fontcheck.py [путь к файлу или папке] [--target ru|en]
+
+Без --target требуются все наборы глифов сразу, как раньше. С целевым
+языком — только его: латинский шрифт не должен блокировать английскую
+страницу из-за отсутствия кириллицы.
 """
 import os
 import struct
@@ -30,6 +34,14 @@ CYRILLIC = [chr(c) for c in range(0x410, 0x450)] + ["\u0401", "\u0451"]
 LATIN = [chr(c) for c in range(0x41, 0x5B)] + [chr(c) for c in range(0x61, 0x7B)]
 DIGITS = [chr(c) for c in range(0x30, 0x3A)]
 PUNCT = list(".,!?:;()'\"-\u2013\u2014\u2026\u00ab\u00bb\u201c\u201d")
+
+GLYPH_SETS = {
+    "cyrillic": CYRILLIC,
+    "latin": LATIN,
+    "digits": DIGITS,
+    "punct": PUNCT,
+}
+ALL_SETS = ("cyrillic", "latin", "digits", "punct")
 
 NAME_FAMILY, NAME_STYLE, NAME_PS = 1, 2, 6
 
@@ -129,7 +141,22 @@ def _coverage(buf, off):
     raise ValueError("не нашёл пригодной таблицы cmap")
 
 
-def inspect(path):
+def sets_for(target=None):
+    """Наборы глифов, обязательные для целевого языка.
+
+    None — все, как было до появления языковых пар: без цели непонятно, что
+    можно не требовать, и лишняя строгость безопаснее лишней снисходительности.
+    Список для языка лежит в translate.TARGETS, рядом с промптом: латинский
+    шрифт без кириллицы блокировал прогон даже там, где верстается английский.
+    """
+    if not target:
+        return ALL_SETS
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import translate
+    return translate.glyph_sets(target)
+
+
+def inspect(path, target=None, sets=None):
     with open(path, "rb") as f:
         buf = f.read()
     t = _tables(buf)
@@ -137,17 +164,14 @@ def inspect(path):
         raise ValueError("нет таблицы name или cmap")
     nm = _names(buf, t["name"][0])
     cov = _coverage(buf, t["cmap"][0])
+    need = sets if sets is not None else sets_for(target)
     return {
         "file": path,
         "ps": nm.get(NAME_PS, ""),
         "family": nm.get(NAME_FAMILY, ""),
         "style": nm.get(NAME_STYLE, ""),
-        "missing": {
-            "cyrillic": [c for c in CYRILLIC if ord(c) not in cov],
-            "latin": [c for c in LATIN if ord(c) not in cov],
-            "digits": [c for c in DIGITS if ord(c) not in cov],
-            "punct": [c for c in PUNCT if ord(c) not in cov],
-        },
+        "missing": {k: [c for c in GLYPH_SETS[k] if ord(c) not in cov]
+                    for k in need},
     }
 
 
@@ -176,21 +200,42 @@ def _collect(target):
 
 
 def main():
-    target = sys.argv[1] if len(sys.argv) > 1 else FONTS_DIR
-    if not os.path.exists(target):
-        print("нет такого пути: " + target)
+    # Ручной разбор, а не argparse: у файла два аргумента и ноль причин
+    # заводить парсер.
+    args = list(sys.argv[1:])
+    lang = None
+    for flag in ("--target", "--lang"):
+        if flag in args:
+            i = args.index(flag)
+            if i + 1 >= len(args):
+                print("после %s нужен код языка (ru, en)" % flag)
+                return 1
+            lang = args[i + 1]
+            del args[i:i + 2]
+    where = args[0] if args else FONTS_DIR
+    if not os.path.exists(where):
+        print("нет такого пути: " + where)
         return 1
 
-    files = _collect(target)
-    if not files:
-        print("шрифтов (.otf/.ttf) не найдено в " + target)
+    try:
+        need = sets_for(lang)
+    except Exception as e:
+        print("не тот целевой язык: %s" % e)
         return 1
+
+    files = _collect(where)
+    if not files:
+        print("шрифтов (.otf/.ttf) не найдено в " + where)
+        return 1
+
+    if lang:
+        print("целевой язык %s, проверяю наборы: %s\n" % (lang, ", ".join(need)))
 
     system = installed_files()
     bad = 0
     for path in files:
         try:
-            info = inspect(path)
+            info = inspect(path, sets=need)
         except Exception as e:
             print("%-28s ОШИБКА: %s" % (os.path.basename(path), e))
             bad += 1

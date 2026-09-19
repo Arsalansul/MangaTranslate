@@ -26,7 +26,7 @@ else:
     detect, DETECTOR_NAME = _morph.detect, _morph.DETECTOR_NAME
 from . import inpaint as _inpaint
 from .kinds import revise_kinds
-from .ocr import read_regions, OCR_NAME
+from .ocr import read_regions, ocr_name, OCR_NAME
 from .schema import PageAnalysis
 
 app = FastAPI(title="manga-tl cv", version="0.1.0")
@@ -40,7 +40,7 @@ def _analyze(img: np.ndarray, name: str, lang: str) -> PageAnalysis:
     regions = detect(img)
     if not regions:
         warnings.append("Текст не найден: проверьте пороги детекта для этой страницы")
-    regions = read_regions(img, regions, lang=lang)
+    regions = read_regions(img, regions, lang=lang, warnings=warnings)
 
     # Вид региона детектор назначает до OCR, вслепую: текст поверх арта он
     # записывает в звук и тем самым выводит из перевода. Теперь есть чем
@@ -57,17 +57,26 @@ def _analyze(img: np.ndarray, name: str, lang: str) -> PageAnalysis:
     h, w = img.shape[:2]
     return PageAnalysis(
         page=name, width=w, height=h, regions=regions,
-        detector=DETECTOR_NAME, ocr=OCR_NAME, warnings=warnings,
+        detector=DETECTOR_NAME, ocr=ocr_name(lang), lang=lang, warnings=warnings,
     )
 
 
 @app.get("/health")
 def health():
     import pytesseract
+    try:
+        # Список словарей в образе. Хост по нему решает, чем распознавать
+        # главу, и не отправляет страницу под язык, которого здесь нет.
+        langs = sorted(pytesseract.get_languages(config=""))
+    except Exception:
+        # Старый pytesseract или поломанный tessdata — не повод ронять
+        # проверку живости: без неё хост считает контейнер недоступным.
+        langs = []
     return {
         "ok": True,
         "detector": DETECTOR_NAME,
         "ocr": OCR_NAME,
+        "langs": langs,
         "tesseract": str(pytesseract.get_tesseract_version()),
         "pages_root": PAGES_ROOT,
         "inpaint": _inpaint.INPAINT_NAME if _inpaint.available() else "none",

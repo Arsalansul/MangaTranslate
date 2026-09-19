@@ -6,9 +6,21 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PAGES_ROOT=/pages
 
+# Словари всех исходных языков ставим сразу: они весят единицы мегабайт,
+# а их нехватка вскрывается только на чужой главе, уже в бою. osd — не язык,
+# а определитель ориентации и письменности, нужен вертикальному тексту.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         tesseract-ocr \
         tesseract-ocr-eng \
+        tesseract-ocr-kor \
+        tesseract-ocr-chi-sim \
+        tesseract-ocr-chi-tra \
+        tesseract-ocr-fra \
+        tesseract-ocr-deu \
+        tesseract-ocr-spa \
+        tesseract-ocr-ita \
+        tesseract-ocr-por \
+        tesseract-ocr-osd \
         libglib2.0-0 \
         libgomp1 \
     && rm -rf /var/lib/apt/lists/*

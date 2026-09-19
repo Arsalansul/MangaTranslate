@@ -81,4 +81,10 @@ class PageAnalysis(BaseModel):
     regions: List[Region]
     detector: str = Field(description="Чем детектили — для воспроизводимости")
     ocr: str = Field(description="Чем распознавали")
+    lang: str = Field(
+        "eng",
+        description="Язык исходника, которым распознавали (код Tesseract). "
+                    "По умолчанию eng — чтобы читались analysis.json, "
+                    "сохранённые до появления поля.",
+    )
     warnings: List[str] = Field(default_factory=list)
