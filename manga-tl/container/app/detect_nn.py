@@ -32,7 +32,7 @@ import cv2
 import numpy as np
 
 from .schema import Region
-from .detect import _group_lines
+from .detect import _group_lines, LINE_GAP_FACTOR
 
 DETECTOR_NAME = "comic-text-detector-onnx-v2"
 
@@ -176,25 +176,32 @@ def _glyph_scale(mask: np.ndarray) -> int:
     return int(np.median(hs)) if hs else 12
 
 
-def _line_boxes(mask: np.ndarray, scale: int) -> List[Box]:
+def _line_boxes(mask: np.ndarray, scale: int, vertical: bool = False) -> List[Box]:
     """Склеивает глифы в строки. Ядро шире, чем выше: смыкаем буквы и
-    межсловные пробелы, но не слипаем соседние строки."""
-    kw = max(6, int(scale * KERNEL_FACTOR))
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kw, 3))
+    межсловные пробелы, но не слипаем соседние строки.
+
+    На вертикальном наборе всё то же самое, только повёрнутое: ядро выше,
+    чем шире, и «строка» на выходе — это колонка иероглифов сверху вниз.
+    """
+    long_side = max(6, int(scale * KERNEL_FACTOR))
+    size = (3, long_side) if vertical else (long_side, 3)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, size)
     merged = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
     contours, _ = cv2.findContours(merged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     boxes = []
     for c in contours:
         x, y, bw, bh = cv2.boundingRect(c)
-        if bh < MIN_LINE_H:
+        # Поперёк набора строка обязана иметь высоту глифа, вдоль — длину.
+        across, along = (bw, bh) if vertical else (bh, bw)
+        if across < MIN_LINE_H:
             continue
-        # Узкая колонка чернил — либо крапина, либо строка из одной буквы:
-        # «I», «А», «?». Отличаем по росту: буква набора ровно такая же
-        # высокая, как соседние строки, а крапина втрое ниже. Потерянная
+        # Короткий столбик чернил — либо крапина, либо строка из одной буквы:
+        # «I», «А», «?». Отличаем по размеру поперёк набора: буква ровно
+        # такая же, как соседние строки, а крапина втрое мельче. Потерянная
         # строка дорого стоит: её не переводят и не стирают, и в пузыре
         # поверх русского текста остаётся английская буква.
-        if bw < MIN_LINE_W and bh < scale * NARROW_LINE_H:
+        if along < MIN_LINE_W and across < scale * NARROW_LINE_H:
             continue
         boxes.append((x, y, bw, bh))
     return boxes
@@ -278,7 +285,7 @@ def _merge_nested(groups: List[Tuple[List[Box], Optional[Box]]]
     return out
 
 
-def _stitch(boxes: List[Box]) -> List[Box]:
+def _stitch(boxes: List[Box], vertical: bool = False) -> List[Box]:
     """Сшивает обрывки одной строки, разъехавшиеся по межсловному пробелу.
 
     Глифы смыкаются в строку морфологией с ядром в долях медианной высоты
@@ -292,30 +299,70 @@ def _stitch(boxes: List[Box]) -> List[Box]:
     страницы. Сшиваются только строки, не попавшие ни в один бокс модели:
     внутри бокса строки собираются по нему, а лишняя склейка через колонку
     помешала бы развести слипшиеся балуны.
+
+    На вертикальном наборе оси меняются местами: разрыв ищется по вертикали,
+    а совпадать обязаны горизонтальные границы колонки.
     """
-    out = sorted(boxes, key=lambda b: b[0])
+    # v — ось, вдоль которой идёт строка, p — поперёк неё. Размер по оси
+    # лежит на два индекса дальше: (x, y, w, h).
+    v, p = (1, 0) if vertical else (0, 1)
+    out = sorted(boxes, key=lambda b: b[v])
     joined = True
     while joined:
         joined = False
-        for i in range(len(out)):
-            for j in range(i + 1, len(out)):
-                a, b = out[i], out[j]
-                h = min(a[3], b[3])
-                if not h or float(h) / max(a[3], b[3]) < STITCH_ALIGN:
+        for m in range(len(out)):
+            for n in range(m + 1, len(out)):
+                a, b = out[m], out[n]
+                t = min(a[p + 2], b[p + 2])
+                if not t or float(t) / max(a[p + 2], b[p + 2]) < STITCH_ALIGN:
                     continue
-                over = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
-                gap = max(a[0], b[0]) - min(a[0] + a[2], b[0] + b[2])
-                if over < h * STITCH_ALIGN or gap > h * STITCH_GAP:
+                over = (min(a[p] + a[p + 2], b[p] + b[p + 2])
+                        - max(a[p], b[p]))
+                gap = max(a[v], b[v]) - min(a[v] + a[v + 2], b[v] + b[v + 2])
+                if over < t * STITCH_ALIGN or gap > t * STITCH_GAP:
                     continue
                 x, y = min(a[0], b[0]), min(a[1], b[1])
-                out[i] = (x, y, max(a[0] + a[2], b[0] + b[2]) - x,
+                out[m] = (x, y, max(a[0] + a[2], b[0] + b[2]) - x,
                           max(a[1] + a[3], b[1] + b[3]) - y)
-                del out[j]
+                del out[n]
                 joined = True
                 break
             if joined:
                 break
     return out
+
+
+def _group_cols(boxes: List[Box]) -> List[List[Box]]:
+    """То же, что _group_lines, но для вертикального набора.
+
+    Колонки собираются в блок, если перекрываются по вертикали и стоят
+    рядом по горизонтали. Обход справа налево — в этом порядке читается
+    вертикальный китайский, и в нём же колонки должны лечь в регион.
+    """
+    if not boxes:
+        return []
+    boxes = sorted(boxes, key=lambda b: (-(b[0] + b[2]), b[1]))
+    groups: List[List[Box]] = [[boxes[0]]]
+
+    for b in boxes[1:]:
+        x, y, bw, bh = b
+        placed = False
+        for g in groups:
+            gx = min(p[0] for p in g)
+            gy = min(p[1] for p in g)
+            gy2 = max(p[1] + p[3] for p in g)
+            gw = float(np.median([p[2] for p in g]))
+            overlap = min(gy2, y + bh) - max(gy, y)
+            # Следующая колонка всегда левее группы: боксы отсортированы
+            # справа налево, поэтому зазор считается от её правого края.
+            if (overlap > 0.3 * min(gy2 - gy, bh)
+                    and 0 <= gx - (x + bw) <= gw * LINE_GAP_FACTOR):
+                g.append(b)
+                placed = True
+                break
+        if not placed:
+            groups.append([b])
+    return groups
 
 
 def _split_columns(group: List[Box], scale: int) -> List[List[Box]]:
@@ -598,6 +645,8 @@ def _ragged(group: List[Box], font_px: int) -> bool:
     и перевод, слитый в абзац, ляжет мимо линеек и мимо колонки номеров.
     Отличить от реплики можно по геометрии: у реплики строки центрованы,
     поэтому гуляют левые края; у списка ровно наоборот.
+
+    Только для горизонтального набора — почему, см. вызов в _region.
     """
     if len(group) < RAGGED_MIN_LINES or font_px <= 0:
         return False
@@ -608,7 +657,8 @@ def _ragged(group: List[Box], font_px: int) -> bool:
 
 
 def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
-            mask: np.ndarray, scale: int, blk: Optional[Box]) -> Optional[Region]:
+            mask: np.ndarray, scale: int, blk: Optional[Box],
+            vertical: bool = False) -> Optional[Region]:
     H, W = gray.shape
     x = min(p[0] for p in group)
     y = min(p[1] for p in group)
@@ -625,11 +675,14 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
     if not confirmed and ink_px < MIN_ORPHAN_PX:
         return None
 
-    heights = [p[3] for p in group]
-    font_px = int(np.median(heights))
+    # Кегль — это размер строки поперёк набора, а шаг строк — расстояние
+    # между их началами. У вертикального набора и то и другое считается по
+    # другой оси: кегль равен ширине колонки, шаг — расстоянию между ними.
+    s = 0 if vertical else 1
+    font_px = int(np.median([p[s + 2] for p in group]))
     if len(group) > 1:
-        tops = sorted(p[1] for p in group)
-        gaps = [tops[j + 1] - tops[j] for j in range(len(tops) - 1)]
+        starts = sorted(p[s] for p in group)
+        gaps = [starts[j + 1] - starts[j] for j in range(len(starts) - 1)]
         line_h = int(np.median(gaps)) if gaps else int(font_px * 1.2)
     else:
         line_h = int(font_px * 1.2)
@@ -677,7 +730,12 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
         mx2, my2 = min(W, x2 + PAD), min(H, y2 + PAD)
         poly = [[mx, my], [mx2, my], [mx2, my2], [mx, my2]]
     polys = _mask_polys(mask, group, x, y, x2, y2, local)
-    keep_lines = _ragged(group, font_px)
+    # У вертикального набора признак «список» срабатывает на любой реплике:
+    # колонки всегда начинаются от одной линии сверху, а длины у них разные —
+    # это и есть обычная вертикальная проза, а не содержание. Держать такие
+    # переносы нельзя: они технические, и русская фраза оказалась бы разрезана
+    # там, где кончилась колонка иероглифов.
+    keep_lines = False if vertical else _ragged(group, font_px)
 
     # Рамку считаем всем, без оглядки на вид региона. Пустая рамка означает
     # «весь bbox», а в него длинная русская реплика не влезает — так текст и
@@ -704,22 +762,43 @@ def _region(idx: int, group: List[Box], img_bgr: np.ndarray, gray: np.ndarray,
     )
 
 
-def detect(img_bgr: np.ndarray) -> List[Region]:
+def detect(img_bgr: np.ndarray, vertical: bool = False) -> List[Region]:
+    """Регионы страницы. vertical — набор колонками, справа налево.
+
+    Сама сеть от ориентации не зависит: она обучена в том числе на японской
+    манге и баллоны находит одинаково. Поворачивается только сборка строк
+    внутри баллона и порядок чтения.
+    """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
     mask, blks = analyze_page(img_bgr)
     scale = _glyph_scale(mask)
-    lines = _line_boxes(mask, scale)
+    lines = _line_boxes(mask, scale, vertical)
 
     in_blocks, orphans = _assign(lines, blks)
-    groups = [(c, blk) for g, blk in in_blocks for c in _split_columns(g, scale)]
-    groups += [(g, None) for g in _group_lines(_stitch(orphans))]
+    if vertical:
+        # _split_columns режет блок по пустому вертикальному коридору — то
+        # есть ровно по тем зазорам, которые в вертикальном наборе разделяют
+        # колонки одной реплики. Здесь он разорвал бы каждый баллон на куски,
+        # поэтому блок остаётся целым. Платим за это тем, что два слипшихся
+        # баллона он больше не разведёт.
+        groups = list(in_blocks)
+    else:
+        groups = [(c, blk) for g, blk in in_blocks
+                  for c in _split_columns(g, scale)]
+    grouper = _group_cols if vertical else _group_lines
+    groups += [(g, None) for g in grouper(_stitch(orphans, vertical))]
     groups = _merge_nested(groups)
-    groups.sort(key=lambda gb: min(p[1] for p in gb[0]))
+    # Порядок чтения: сверху вниз, а у вертикального набора — справа налево.
+    if vertical:
+        groups.sort(key=lambda gb: -max(p[0] + p[2] for p in gb[0]))
+    else:
+        groups.sort(key=lambda gb: min(p[1] for p in gb[0]))
 
     regions: List[Region] = []
     for g, blk in groups:
-        r = _region(len(regions) + 1, g, img_bgr, gray, mask, scale, blk)
+        r = _region(len(regions) + 1, g, img_bgr, gray, mask, scale, blk,
+                    vertical)
         if r is not None:
             regions.append(r)
     _deoverlap(regions)

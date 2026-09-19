@@ -22,11 +22,14 @@ from . import detect_nn as _nn
 # модель ещё не скачана, и связка с Photoshop окажется непроверяемой.
 if _nn.available():
     detect, DETECTOR_NAME = _nn.detect, _nn.DETECTOR_NAME
+    VERTICAL_OK = True
 else:
     detect, DETECTOR_NAME = _morph.detect, _morph.DETECTOR_NAME
+    # Морфологический откат собирает только горизонтальные строки.
+    VERTICAL_OK = False
 from . import inpaint as _inpaint
 from .kinds import revise_kinds
-from .ocr import read_regions, ocr_name, OCR_NAME
+from .ocr import read_regions, ocr_name, is_vertical, OCR_NAME
 from .schema import PageAnalysis
 
 app = FastAPI(title="manga-tl cv", version="0.1.0")
@@ -37,7 +40,14 @@ PAGES_ROOT = os.environ.get("PAGES_ROOT", "/pages")
 
 def _analyze(img: np.ndarray, name: str, lang: str) -> PageAnalysis:
     warnings: List[str] = []
-    regions = detect(img)
+    # Ориентацию задаёт сам словарь: chi_sim_vert — это вертикальный набор,
+    # и детектор должен собирать колонки, а не строки.
+    vertical = is_vertical(lang)
+    if vertical and not VERTICAL_OK:
+        warnings.append("Вертикальный словарь выбран, но веса детектора не "
+                        "смонтированы: откат читает страницу строками")
+        vertical = False
+    regions = detect(img, vertical=vertical) if VERTICAL_OK else detect(img)
     if not regions:
         warnings.append("Текст не найден: проверьте пороги детекта для этой страницы")
     regions = read_regions(img, regions, lang=lang, warnings=warnings)

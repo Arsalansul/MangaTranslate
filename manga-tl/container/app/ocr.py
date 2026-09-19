@@ -24,11 +24,17 @@ DEFAULT_LANG = "eng"
 # сюда не входит: там пробелы настоящие, их надо сохранить.
 NO_SPACE_LANGS = ("chi_sim", "chi_tra", "jpn")
 
+# Суффикс вертикальных словарей Tesseract: chi_sim_vert, chi_tra_vert, jpn_vert.
+# Отдельного флага в запросе нет намеренно — ориентация это свойство словаря,
+# и она сама приезжает с выбранным языком, попадая и в analysis.json.
+VERT_SUFFIX = "_vert"
+
 # Tesseract заметно точнее на увеличенном изображении: комикс-текст
 # в вебтуне часто мельче, чем то, на чём модель обучалась.
 UPSCALE = 2.0
 PSM_BLOCK = 6   # единый блок текста
 PSM_LINE = 7    # одна строка
+PSM_VERT = 5    # блок вертикального текста, колонки справа налево
 
 
 def ocr_name(lang: str = DEFAULT_LANG) -> str:
@@ -45,10 +51,24 @@ def ocr_name(lang: str = DEFAULT_LANG) -> str:
 OCR_NAME = ocr_name()
 
 
+def _base_lang(lang: str) -> str:
+    """Письменность без вертикального суффикса.
+
+    Язык может прийти связкой ("chi_sim+eng"); ведущий в ней и определяет
+    письменность страницы. chi_sim_vert — тот же китайский, и правила
+    склейки слов у него те же.
+    """
+    head = (lang or DEFAULT_LANG).split("+")[0]
+    return head[:-len(VERT_SUFFIX)] if head.endswith(VERT_SUFFIX) else head
+
+
+def is_vertical(lang: str) -> bool:
+    """Вертикальный ли набор. Решает и OCR, и сборка строк в детекторе."""
+    return (lang or "").split("+")[0].endswith(VERT_SUFFIX)
+
+
 def _word_sep(lang: str) -> str:
-    # Язык может прийти связкой ("chi_sim+eng"); ведущий в ней и определяет
-    # письменность страницы.
-    return "" if (lang or "").split("+")[0] in NO_SPACE_LANGS else " "
+    return "" if _base_lang(lang) in NO_SPACE_LANGS else " "
 
 
 def _no_dictionary(err: str) -> bool:
@@ -73,6 +93,7 @@ def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = DEFAULT
                  warnings: Optional[List[str]] = None) -> List[Region]:
     H, W = img_bgr.shape[:2]
     sep = _word_sep(lang)
+    vertical = is_vertical(lang)
     for r in regions:
         x, y, w, h = r.bbox
         x, y = max(0, x), max(0, y)
@@ -81,7 +102,13 @@ def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = DEFAULT
             continue
 
         prepped = _prep(crop)
-        psm = PSM_LINE if r.lines <= 1 else PSM_BLOCK
+        # Вертикальному набору psm 7 не подходит даже на одной колонке:
+        # «одна строка» для Tesseract горизонтальна, и колонка иероглифов
+        # читается как столбик отдельных знаков.
+        if vertical:
+            psm = PSM_VERT
+        else:
+            psm = PSM_LINE if r.lines <= 1 else PSM_BLOCK
         cfg = "--oem 3 --psm %d" % psm
 
         try:
@@ -93,10 +120,17 @@ def read_regions(img_bgr: np.ndarray, regions: List[Region], lang: str = DEFAULT
                 # можно сделать: выглядит как нечитаемая глава, а не как
                 # незакрытый apt-get.
                 if warnings is not None:
+                    # Вертикальных словарей в apt нет вовсе, и советовать
+                    # несуществующий пакет — отправить человека по ложному
+                    # следу: они кладутся файлом из tessdata_fast.
+                    how = ("Файл %s.traineddata кладётся в образ из "
+                           "tessdata_fast — see container/Dockerfile."
+                           % lang if is_vertical(lang) else
+                           "Нужен пакет tesseract-ocr-%s в образе."
+                           % lang.replace("_", "-"))
                     warnings.append(
                         "Tesseract не нашёл словарь языка '%s' — страница не "
-                        "распознана. Нужен пакет tesseract-ocr-%s в образе."
-                        % (lang, lang.replace("_", "-")))
+                        "распознана. %s" % (lang, how))
                 break
             r.text, r.conf = "", 0.0
             continue
