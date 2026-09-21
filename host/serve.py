@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bridge
 import envkey
 import fontcheck
+import project
 import run
 import translate
 
@@ -519,6 +520,96 @@ def api_config(query):
     }
 
 
+# --- проект -----------------------------------------------------------
+
+# Открытый проект один, как и открытая глава: инструмент для одного человека
+# за одним столом. Держим разобранный объект, но состав глав каждый раз
+# перечитываем с диска — иначе список разойдётся с тем, что там лежит.
+PROJECT = {"proj": None}
+
+
+def _project_state():
+    proj = PROJECT["proj"]
+    if proj is not None and not project.is_project(proj["root"]):
+        # Папку унесли или удалили, пока она была открыта.
+        proj = PROJECT["proj"] = None
+    return {"project": project.info(proj) if proj else None,
+            "recent": [{"path": r, "name": os.path.basename(r)}
+                       for r in project.recent()]}
+
+
+def _proj():
+    proj = PROJECT["proj"]
+    if proj is None:
+        raise ApiError(400, "Проект не открыт")
+    return proj
+
+
+def api_project(query):
+    return _project_state()
+
+
+def api_project_open(body):
+    path = _text(body, "path")
+    if not path:
+        raise ApiError(400, "Нужен путь к папке проекта")
+    try:
+        PROJECT["proj"] = project.load(path)
+    except project.ProjectError as e:
+        raise ApiError(400, str(e))
+    project.remember(PROJECT["proj"]["root"])
+    return _project_state()
+
+
+def api_project_create(body):
+    path = _text(body, "path")
+    if not path:
+        raise ApiError(400, "Нужна папка, в которой завести проект")
+    try:
+        PROJECT["proj"] = project.create(path, name=_text(body, "name"),
+                                         source=_text(body, "source"))
+    except project.ProjectError as e:
+        raise ApiError(400, str(e))
+    except OSError as e:
+        raise ApiError(500, "Не создался проект: %s" % e)
+    return _project_state()
+
+
+def api_project_close(body):
+    PROJECT["proj"] = None
+    return _project_state()
+
+
+def api_project_settings(body):
+    """Настройки проекта из браузера: пишутся на каждое изменение в форме.
+
+    Ключи моделей сюда не попадают: они в переменных среды (вкладка «Ключи»),
+    потому что папку проекта копируют и архивируют, а ключ уехал бы с ней.
+    """
+    proj = _proj()
+    patch = {k: v for k, v in (body or {}).items() if k in project.FIELDS}
+    name = _text(body, "name")
+    source = body.get("source")
+    try:
+        if patch:
+            project.update(proj, patch)
+        if name and name != proj["name"]:
+            project.rename(proj, name)
+        if isinstance(source, str):
+            project.set_source(proj, source)
+    except project.ProjectError as e:
+        raise ApiError(400, str(e))
+    except OSError as e:
+        raise ApiError(500, "Не записался project.json: %s" % e)
+    return _project_state()
+
+
+def api_project_forget(body):
+    """Убрать из списка недавних. Саму папку не трогаем."""
+    project.forget(_text(body, "path"))
+    return _project_state()
+
+
 def api_scan(query):
     """Сколько страниц в папке — до того, как запускать получасовую задачу."""
     full = run._norm(_one(query, "path").strip())
@@ -607,8 +698,13 @@ def api_run(body):
         raise ApiError(400, "Нужна папка с исходниками")
     # Ключ и адрес провайдера из браузера не принимаем: ключ живёт в
     # переменной окружения, адрес — в BACKENDS. Вкладке они не нужны.
-    args = run.settings(
-        target=target, out=_text(body, "out") or None,
+    # Открытый проект подставляется тем же with_project, что и в командной
+    # строке: куда складывать, какой глоссарий и как понимать имя главы — это
+    # его ответы, и второй реализации у них быть не должно.
+    proj = PROJECT["proj"]
+    kw = dict(
+        target=target, project=proj["root"] if proj else None,
+        out=_text(body, "out") or None,
         font=_text(body, "font") or bridge.DEFAULT_FONT,
         lang=_choice(body, "lang", translate.SOURCES, translate.DEFAULT_SOURCE),
         target_lang=_choice(body, "target_lang", translate.TARGETS, translate.DEFAULT_TARGET),
@@ -618,6 +714,10 @@ def api_run(body):
         reuse=_flag(body, "reuse"), no_translate=_flag(body, "no_translate"),
         erase_only=_flag(body, "erase_only"), analyze_only=_flag(body, "analyze_only"),
         limit=_count(body, "limit"), start=_text(body, "start") or None)
+    try:
+        args = run.settings(**run.with_project(kw))
+    except SystemExit as e:
+        raise ApiError(400, str(e))
     return JOB.start("chapter", os.path.basename(target.rstrip("/\\")) or target,
                      _chapter_work(args))
 
@@ -716,6 +816,7 @@ GET = {
     "/api/img": api_img,
     "/api/config": api_config,
     "/api/scan": api_scan,
+    "/api/project": api_project,
     "/api/status": api_status,
 }
 POST = {
@@ -726,6 +827,11 @@ POST = {
     "/api/cancel": api_cancel,
     "/api/retypeset": api_retypeset,
     "/api/key": api_key,
+    "/api/project/open": api_project_open,
+    "/api/project/create": api_project_create,
+    "/api/project/close": api_project_close,
+    "/api/project/settings": api_project_settings,
+    "/api/project/forget": api_project_forget,
 }
 
 

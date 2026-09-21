@@ -12,6 +12,7 @@ OpenRouter, локальные Ollama и LM Studio) говорит по OpenAI-�
 
 Только stdlib: хост остаётся чистым, тяжёлые зависимости живут в контейнере.
 """
+import difflib
 import json
 import os
 import re
@@ -61,6 +62,9 @@ BACKENDS = {
         "key_env": "OPENROUTER_API_KEY",
         "model": "z-ai/glm-5.2:free",
         "json_mode": True,
+        # Витрина из четырёх сотен чужих моделей, и список открыт без ключа.
+        # Имя модели тут набирают руками, промахнуться легко — см. _catalog.
+        "catalog": "https://openrouter.ai/api/v1/models",
         "note": "витрина чужих моделей; список: translate.py openrouter",
     },
     "ollama": {
@@ -340,6 +344,20 @@ def _parse(raw: str) -> dict:
     return out
 
 
+def _did_you_mean(model, ids):
+    """Похожие имена моделей: промах обычно в суффиксе, а не в слове.
+
+    Так `qwen/qwen3-vl-8b` (имя из LM Studio) находит `qwen/qwen3-vl-8b-instruct`,
+    а не «нет такой модели, разбирайтесь сами».
+    """
+    near = [i for i in ids if i.startswith(model) or model.startswith(i)]
+    if not near:
+        near = difflib.get_close_matches(model, ids, n=5, cutoff=0.7)
+    if not near:
+        return ""
+    return "\nПохожие: " + ", ".join(sorted(near)[:5])
+
+
 class Engine:
     """Один провайдер перевода: куда стучаться, чем и под каким ключом."""
 
@@ -366,6 +384,7 @@ class Engine:
         self.json_mode = cfg["json_mode"]
         self.no_think = cfg.get("no_think", False)
         self.key_env = cfg["key_env"]
+        self.catalog = cfg.get("catalog", "")
         self.api_key = api_key or (os.environ.get(cfg["key_env"], "").strip()
                                    if cfg["key_env"] else "")
         # Локальная модель на CPU думает минутами, а не секундами.
@@ -387,6 +406,33 @@ class Engine:
                 % (self.provider, self.key_env))
         if not self.key_env:
             self._resolve_local()
+        elif self.catalog:
+            self._check_catalog()
+
+    def _check_catalog(self):
+        """Есть ли такая модель у провайдера — до первой страницы.
+
+        Имя модели у витрины вроде openrouter набирают руками, и промах в нём
+        ничем не отличается от рабочего имени, пока не уйдёт первый запрос.
+        Дальше каждая страница главы отвечает HTTP 400 по отдельности, и
+        оплаченного времени на это уходит столько же, сколько на перевод.
+
+        Каталог недоступен — молчим и идём дальше: проверка не должна быть
+        новым поводом не запуститься.
+        """
+        try:
+            with urllib.request.urlopen(self.catalog, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            ids = [m.get("id") for m in data.get("data") or [] if m.get("id")]
+        except Exception:
+            return
+        if not ids or self.model in ids:
+            return
+        raise TranslateError(
+            "У %s нет модели %r.%s\n"
+            "Весь список: %s"
+            % (self.provider, self.model, _did_you_mean(self.model, ids),
+               self.catalog))
 
     def _resolve_local(self):
         """Спрашивает у локального сервера, что в него загружено.
@@ -533,6 +579,31 @@ class Engine:
         got = _parse(self._call(_payload(
             targets, glossary,
             src_lang or self.src_lang, target or self.target)))
+
+        # Модель иногда возвращает не все ключи: на длинной странице реплика
+        # выпадает из ответа молча — ни ошибки, ни пустой строки. Дальше это
+        # тянется само: нет перевода — нечего стирать — на готовой странице
+        # остаётся чужой текст, и виден он только глазами.
+        #
+        # Пустая строка — не потеря: так модель по инструкции помечает мусор,
+        # и такой регион мы намеренно оставляем как есть.
+        lost = [r for r in targets
+                if r["id"] not in got
+                and not (keep_filled and (r.get("translation") or "").strip())]
+        if lost:
+            # Спрашиваем только про потерянные: короткий список модель
+            # дочитывает до конца. Переспрашивать страницу целиком нельзя —
+            # уже полученные реплики перетёрлись бы другим вариантом.
+            try:
+                again = _parse(self._call(_payload(
+                    lost, glossary,
+                    src_lang or self.src_lang, target or self.target)))
+            except TranslateError:
+                # Вторая попытка — добор, а не обязанность: страница с одной
+                # непереведённой репликой лучше, чем упавшая глава.
+                again = {}
+            for k, v in again.items():
+                got.setdefault(k, v)
 
         filled = 0
         for r in targets:

@@ -76,9 +76,8 @@ def list_pages(full_dir):
     return names
 
 
-def settings(target, out=None, font=bridge.DEFAULT_FONT,
-             lang=translate.DEFAULT_SOURCE, target_lang=translate.DEFAULT_TARGET,
-             provider=translate.DEFAULT_PROVIDER, model=None, api_key=None,
+def settings(target, out=None, font=None, lang=None, target_lang=None,
+             provider=None, model=None, api_key=None,
              api_url=None, glossary=None, reuse=False, no_translate=False,
              erase_only=False, analyze_only=False, limit=None, start=None):
     """Настройки прогона одним объектом — и из argparse, и из кода.
@@ -87,12 +86,58 @@ def settings(target, out=None, font=bridge.DEFAULT_FONT,
     веб-слою пришлось бы повторять список argparse и расходиться с ним.
     Имена полей — как у флагов, чтобы settings(**vars(p.parse_args()))
     проходил без перекладывания.
+
+    Умолчания подставляются здесь, а не в argparse, ради проекта: между
+    разбором флагов и этим вызовом стоит with_project, и он должен отличать
+    «человек не задал шрифт» от «человек задал шрифт по умолчанию».
     """
     return types.SimpleNamespace(
-        target=target, out=out, font=font, lang=lang, target_lang=target_lang,
-        provider=provider, model=model, api_key=api_key, api_url=api_url,
+        target=target, out=out, font=font or bridge.DEFAULT_FONT,
+        lang=lang or translate.DEFAULT_SOURCE,
+        target_lang=target_lang or translate.DEFAULT_TARGET,
+        provider=provider or translate.DEFAULT_PROVIDER,
+        model=model, api_key=api_key, api_url=api_url,
         glossary=glossary, reuse=reuse, no_translate=no_translate,
         erase_only=erase_only, analyze_only=analyze_only, limit=limit, start=start)
+
+
+def with_project(kw):
+    """Подставить настройки проекта туда, где флаг не задан.
+
+    Проект — это ответ на вопрос «чем гнать вот эту серию»: шрифт, языки,
+    модель, глоссарий и папка, куда складывать. Явный флаг всегда сильнее:
+    проект задаёт умолчания, а не запрещает от них отступить.
+
+    project импортируется здесь, а не наверху: project читает у run список
+    расширений и list_pages, и встречный импорт замкнул бы круг.
+    """
+    path = kw.pop("project", None)
+    if not path:
+        return kw
+    import project
+    try:
+        proj = project.load(path)
+    except project.ProjectError as e:
+        raise SystemExit(str(e))
+
+    for key, value in proj["settings"].items():
+        if kw.get(key) is None:
+            kw[key] = value
+
+    # Главу можно назвать именем, а не путём: где она лежит, знает проект.
+    src = project.source_dir(proj)
+    target = (kw.get("target") or "").strip()
+    if src and target and not os.path.exists(_norm(target)):
+        inside = os.path.join(src, target)
+        if os.path.exists(inside):
+            kw["target"] = target = inside
+    if not kw.get("out"):
+        name = os.path.basename(os.path.normpath(_norm(target)))
+        kw["out"] = os.path.join(project.out_root(proj), name)
+    gl = project.glossary_path(proj)
+    if not kw.get("glossary") and os.path.isfile(gl):
+        kw["glossary"] = gl
+    return kw
 
 
 def resolve(args):
@@ -208,8 +253,18 @@ def process(name, full_dir, out_dir, args, engine, glossary,
             # таблице у страницы окажется ноль регионов, хотя детект их нашёл.
             e.row = row
             raise
+        # Реплику без перевода не стирают — значит, на готовой странице
+        # останется исходный текст. Само по себе это правильно (пустой бабл
+        # хуже чужого), но узнавать об этом, разглядывая результат, не дело:
+        # «регионов 12, с переводом 3» ничем не отличается от нормы, потому
+        # что большинство регионов — звуки, их и не переводят.
+        row["blank"] = [r["id"] for r in targets
+                        if not (r.get("translation") or "").strip()]
     report("       регионов %d, с переводом %d" % (row["regions"], row["translated"]),
            stage="translate")
+    if row.get("blank"):
+        report("       ! без перевода, текст остался исходным: %s"
+               % ", ".join(row["blank"]), stage="translate", quiet=True)
 
     # Сохраняем до Photoshop: если он упадёт, перевод не потеряется.
     _save(apath, analysis)
@@ -309,21 +364,23 @@ def main():
     p.add_argument("target", help="папка с картинками (или одна картинка); "
                                   "любая папка на диске, класть никуда не надо")
     p.add_argument("--out", help="куда складывать результат (по умолчанию out/<имя папки>)")
-    p.add_argument("--font", default=bridge.DEFAULT_FONT,
-                   help="PostScript-имя шрифта; список: python host/fontcheck.py")
-    p.add_argument("--lang", default=translate.DEFAULT_SOURCE,
-                   choices=sorted(translate.SOURCES),
-                   help="язык исходника: чем распознавать и с чего переводить")
-    p.add_argument("--target-lang", default=translate.DEFAULT_TARGET,
-                   choices=sorted(translate.TARGETS),
-                   help="язык перевода")
-    p.add_argument("--provider", default=translate.DEFAULT_PROVIDER,
-                   choices=sorted(translate.BACKENDS),
-                   help="кто переводит; список: python host/translate.py")
+    p.add_argument("--project", help="папка проекта: оттуда шрифт, языки, "
+                                     "модель, глоссарий и куда складывать")
+    p.add_argument("--font", help="PostScript-имя шрифта (по умолчанию %s); "
+                                  "список: python host/fontcheck.py" % bridge.DEFAULT_FONT)
+    p.add_argument("--lang", choices=sorted(translate.SOURCES),
+                   help="язык исходника: чем распознавать и с чего переводить "
+                        "(по умолчанию %s)" % translate.DEFAULT_SOURCE)
+    p.add_argument("--target-lang", choices=sorted(translate.TARGETS),
+                   help="язык перевода (по умолчанию %s)" % translate.DEFAULT_TARGET)
+    p.add_argument("--provider", choices=sorted(translate.BACKENDS),
+                   help="кто переводит (по умолчанию %s); "
+                        "список: python host/translate.py" % translate.DEFAULT_PROVIDER)
     p.add_argument("--model", help="модель провайдера (по умолчанию его обычная)")
     p.add_argument("--api-key", help="ключ провайдера (по умолчанию из его переменной)")
     p.add_argument("--api-url", help="свой адрес OpenAI-совместимого сервера")
-    p.add_argument("--glossary", help='JSON {"Enkrid": "Энкрид"} — имена и термины')
+    p.add_argument("--glossary", help='путь к JSON {"Enkrid": "Энкрид"} — '
+                                     'имена и термины; в проекте берётся его')
     p.add_argument("--reuse", action="store_true",
                    help="брать анализ и перевод из уже сохранённых analysis.json")
     p.add_argument("--no-translate", action="store_true",
@@ -332,7 +389,7 @@ def main():
     p.add_argument("--analyze-only", action="store_true", help="не трогать Photoshop вовсе")
     p.add_argument("--limit", type=int, help="первые N страниц")
     p.add_argument("--start", help="начать с этой страницы, например 0007.jpeg")
-    args = settings(**vars(p.parse_args()))
+    args = settings(**with_project(vars(p.parse_args())))
 
     full_dir, names, out_dir = resolve(args)
     engine, glossary, h = prepare(args)

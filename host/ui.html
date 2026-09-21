@@ -154,6 +154,40 @@
     border: 1px solid var(--line); border-radius: 3px; }
   .k.local { color: var(--dim); }
 
+  /* --- экран проекта --------------------------------------------------- */
+  #proj { flex: 1; display: none; overflow: auto; padding: 12px 14px; }
+  #proj.show { display: block; }
+  #proj .lead { max-width: 720px; color: var(--dim); font-size: 12px; margin: 0 0 12px; }
+  #proj h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--dim); margin: 16px 0 8px; font-weight: 600; }
+  #proj .f, #proj .note { max-width: 760px; }
+  #proj .note { margin-left: 126px; }
+  #p-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+    max-width: 980px; margin-bottom: 8px; }
+  #p-head input { padding: 4px 6px; font: inherit; width: 260px;
+    border: 1px solid var(--line); border-radius: 3px; }
+  #p-head .path { font-family: Consolas, monospace; font-size: 11.5px; color: var(--dim); }
+  #p-warn { max-width: 980px; margin: 8px 0; padding: 7px 10px; border-radius: 3px;
+    font-size: 12px; display: none; }
+  #p-warn.show { display: block; background: #fdf8e8; border: 1px solid #ddcf9a;
+    color: var(--warn); }
+  table.ch { border-collapse: collapse; width: 100%; max-width: 980px; }
+  table.ch th { text-align: left; font-weight: 600; color: var(--dim); font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: .05em; padding: 4px 8px;
+    border-bottom: 1px solid var(--line); }
+  table.ch td { padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  table.ch tr.gone td { color: var(--dim); }
+  table.ch .st.done { color: var(--accent); }
+  table.ch .st.gone { color: var(--warn); }
+  table.ch td.act { text-align: right; white-space: nowrap; }
+  table.ch td.act button { margin-left: 6px; }
+  #p-recent .r { display: flex; gap: 8px; align-items: baseline; padding: 3px 0;
+    max-width: 760px; }
+  #p-recent .r a { color: var(--accent); cursor: pointer; }
+  #p-recent .r .path { font-family: Consolas, monospace; font-size: 11px;
+    color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #p-recent .r .x { margin-left: auto; color: var(--dim); cursor: pointer; font-size: 11px; }
+
   /* Окно бывает и в половину экрана: колонки ужимаются, а не выдавливают
      картинку в ноль. */
   @media (max-width: 1100px) { #pages { width: 130px; } #side { width: 310px; }
@@ -165,9 +199,11 @@
 <body>
 
 <header>
+  <button id="tab-proj">Проект</button>
   <button id="tab-view" class="on">Просмотр</button>
   <button id="tab-run">Запуск</button>
   <button id="tab-keys">Ключи</button>
+  <span class="meta" id="projname"></span>
   <span id="viewhead">
     <label for="dir">Папка с результатом</label>
     <input id="dir" placeholder="E:/VibeCode/MySkills/manga-tl/out/chapter" spellcheck="false">
@@ -303,6 +339,55 @@
   </div>
 </section>
 
+<section id="proj">
+  <div id="proj-none">
+    <p class="lead">Проект — папка одной серии: настройки, глоссарий и все переводы
+      в одном месте. Оригиналы остаются там, куда их положила качалка: проект на
+      них только ссылается и ничего не копирует. Ключи моделей в проект не входят —
+      они на этой машине, вкладка «Ключи».</p>
+
+    <h2>Создать</h2>
+    <div class="f">
+      <label for="p-path">Папка проекта</label>
+      <input id="p-path" placeholder="E:/Манга/Регрессирующий рыцарь" spellcheck="false">
+    </div>
+    <div class="note">Её создадут, если такой ещё нет.</div>
+    <div class="f">
+      <label for="p-name">Название</label>
+      <input id="p-name" placeholder="по имени папки" spellcheck="false">
+    </div>
+    <div class="f">
+      <label for="p-src">Оригиналы</label>
+      <input id="p-src" placeholder="папка, в подпапках которой лежат главы" spellcheck="false">
+    </div>
+    <div class="note">Главы — подпапки этой папки. Можно указать и позже.</div>
+    <div class="f"><label></label><button id="p-create">Создать проект</button></div>
+
+    <h2>Открыть</h2>
+    <div class="f">
+      <label for="p-open">Папка проекта</label>
+      <input id="p-open" placeholder="папка, в которой лежит project.json" spellcheck="false">
+      <button id="p-openbtn">Открыть</button>
+    </div>
+    <div id="p-recent"></div>
+  </div>
+
+  <div id="proj-open" style="display:none">
+    <div id="p-head"></div>
+    <div id="p-warn"></div>
+    <div class="f">
+      <label for="p-source">Оригиналы</label>
+      <input id="p-source" placeholder="папка, в подпапках которой лежат главы" spellcheck="false">
+      <button id="p-rebind">Перепривязать</button>
+    </div>
+    <div class="note">Если папка переехала, укажите новую: главы сопоставятся по
+      именам, уже переведённое никуда не денется. Шрифт, языки и модель — на
+      вкладке «Запуск», они сохраняются прямо в проект.</div>
+    <h2>Главы</h2>
+    <div id="p-chapters"></div>
+  </div>
+</section>
+
 <section id="keys">
   <p class="lead">Ключ уходит в переменные среды пользователя — туда же, куда
     его кладёт install.bat, и оттуда же его читает командная строка. Работает
@@ -321,6 +406,10 @@ var dirty = {};       // id -> новый перевод, ещё не запис
 var sel = null;       // выделенный регион
 var mode = "both";
 var tab = "view";
+
+var proj = null;      // открытый проект: настройки, оригиналы, главы
+var recent = [];      // недавние проекты для быстрого открытия
+var projSaved = "";   // что уже записано в проект — чтобы не писать то же самое
 
 var cfg = null;       // /api/config: шрифты, провайдеры, языки
 var job = null;       // последний снапшот /api/status
@@ -770,6 +859,9 @@ function remember() {
     data[id] = el.type === "checkbox" ? el.checked : el.value;
   });
   try { localStorage.setItem("manga-tl-run", JSON.stringify(data)); } catch (e) {}
+  // Шрифт, языки и модель принадлежат серии, а не браузеру: при открытом
+  // проекте они уезжают в него, и на другой машине их не придётся набирать.
+  saveProject();
 }
 
 function restore() {
@@ -927,6 +1019,211 @@ function retypeset() {
   }).catch(fail);
 }
 
+// --- проект ----------------------------------------------------------
+
+// Поля, которые принадлежат серии, а не прогону. Их же перечисляет
+// project.FIELDS на сервере; имена полей формы — те же с дефисами.
+var PFIELDS = ["font", "lang", "target_lang", "provider", "model"];
+
+function pid(key) { return "r-" + key.replace(/_/g, "-"); }
+
+function mk(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+function loadProject() {
+  return api("/api/project").then(takeProject);
+}
+
+function takeProject(data) {
+  proj = data.project;
+  recent = data.recent || [];
+  if (!proj) projSaved = "";
+  drawProject();
+  if (proj && cfg) applyProject();
+  return proj;
+}
+
+function formSettings() {
+  var out = {};
+  PFIELDS.forEach(function (k) { out[k] = $(pid(k)).value; });
+  return out;
+}
+
+function applyProject() {
+  // Настройки проекта — это умолчания формы запуска, а не второй её
+  // экземпляр: два одинаковых набора полей разошлись бы в первый же день.
+  var s = proj.settings || {};
+  PFIELDS.forEach(function (k) {
+    if (!s.hasOwnProperty(k)) return;
+    var el = $(pid(k));
+    // Язык или провайдер мог исчезнуть из образа, шрифт — из fonts/:
+    // подставлять вместо него первый попавшийся хуже, чем оставить своё.
+    if (el.tagName === "SELECT" && !hasOption(el, s[k])) return;
+    el.value = s[k];
+  });
+  onProvider();
+  onTargetLang();
+  projSaved = JSON.stringify(formSettings());
+}
+
+function saveProject() {
+  if (!proj) return;
+  var s = formSettings();
+  var sig = JSON.stringify(s);
+  if (sig === projSaved) return;
+  projSaved = sig;
+  api("/api/project/settings", s).then(takeProject).catch(fail);
+}
+
+function openProject(path) {
+  if (!path) return;
+  say("");
+  api("/api/project/open", {path: path}).then(function (data) {
+    takeProject(data);
+    return loadConfig();
+  }).then(function () {
+    // Порядок важен: loadConfig зовёт restore(), а тот тянет настройки из
+    // localStorage. Проект сильнее — он и должен лечь последним.
+    applyProject();
+    showTab("proj");
+    say("Проект открыт: " + proj.name, "ok");
+  }).catch(fail);
+}
+
+function drawProject() {
+  $("proj-none").style.display = proj ? "none" : "";
+  $("proj-open").style.display = proj ? "" : "none";
+  $("projname").textContent = proj ? proj.name : "";
+  drawRecent();
+  if (!proj) return;
+
+  var head = $("p-head");
+  head.innerHTML = "";
+  var name = document.createElement("input");
+  name.value = proj.name;
+  name.spellcheck = false;
+  name.onblur = function () {
+    var v = name.value.trim();
+    if (!v || v === proj.name) { name.value = proj.name; return; }
+    api("/api/project/settings", {name: v}).then(takeProject).catch(fail);
+  };
+  head.appendChild(name);
+  head.appendChild(mk("span", "path", proj.root));
+  var close = mk("button", "", "Закрыть");
+  close.onclick = function () {
+    api("/api/project/close", {}).then(takeProject).catch(fail);
+  };
+  head.appendChild(close);
+
+  $("p-source").value = proj.source || "";
+  var warn = $("p-warn");
+  if (!proj.source) {
+    warn.textContent = "Папка с оригиналами не указана — гнать пока нечего.";
+    warn.className = "show";
+  } else if (!proj.source_ok) {
+    warn.textContent = "Папки с оригиналами нет: " + proj.source +
+      ". Переводы никуда не делись — их можно смотреть и править, но прогнать " +
+      "заново нечего: стирание и вёрстка идут по исходной картинке. Папка " +
+      "переехала — укажите новую, главы сопоставятся по именам.";
+    warn.className = "show";
+  } else {
+    warn.className = "";
+  }
+  drawChapters();
+}
+
+function drawChapters() {
+  var box = $("p-chapters");
+  box.innerHTML = "";
+  var list = proj.chapters || [];
+  if (!list.length) {
+    box.appendChild(mk("div", "note", proj.source_ok
+      ? "В папке с оригиналами нет подпапок с картинками."
+      : "Глав пока нет."));
+    return;
+  }
+  var t = mk("table", "ch");
+  var head = document.createElement("tr");
+  ["Глава", "Страниц", "Состояние", ""].forEach(function (title) {
+    head.appendChild(mk("th", "", title));
+  });
+  t.appendChild(head);
+
+  list.forEach(function (c) {
+    var row = document.createElement("tr");
+    if (c.missing) row.className = "gone";
+    row.appendChild(mk("td", "", c.name));
+    row.appendChild(mk("td", "", c.missing ? "—" : String(c.pages)));
+
+    var st = document.createElement("td");
+    st.appendChild(c.done
+      ? mk("span", "st done", "готово " + c.ok + " из " + c.total +
+                              (c.at ? " · " + c.at : ""))
+      : mk("span", "st", "не прогнана"));
+    if (c.missing) {
+      st.appendChild(document.createTextNode(" "));
+      st.appendChild(mk("span", "st gone", "· нет оригинала"));
+    }
+    row.appendChild(st);
+
+    var act = mk("td", "act");
+    if (c.done) {
+      var see = mk("button", "", "Смотреть");
+      see.onclick = function () { openOut(c.out); };
+      act.appendChild(see);
+    }
+    if (!c.missing) {
+      var go = mk("button", "", c.done ? "Гнать заново" : "Гнать");
+      go.onclick = function () { toRun(c); };
+      act.appendChild(go);
+    }
+    row.appendChild(act);
+    t.appendChild(row);
+  });
+  box.appendChild(t);
+}
+
+function drawRecent() {
+  var box = $("p-recent");
+  box.innerHTML = "";
+  if (!recent.length) return;
+  box.appendChild(mk("div", "note", "Недавние:"));
+  recent.forEach(function (r) {
+    var row = mk("div", "r");
+    var a = mk("a", "", r.name);
+    a.onclick = function () { openProject(r.path); };
+    row.appendChild(a);
+    row.appendChild(mk("span", "path", r.path));
+    var x = mk("span", "x", "забыть");
+    x.title = "убрать из списка; папка останется на месте";
+    x.onclick = function () {
+      api("/api/project/forget", {path: r.path}).then(takeProject).catch(fail);
+    };
+    row.appendChild(x);
+    box.appendChild(row);
+  });
+}
+
+function toRun(c) {
+  // Куда складывать, проект решит сам: out/<глава> внутри него.
+  $("r-target").value = c.src;
+  $("r-out").value = "";
+  remember();
+  showTab("run");
+  scan();
+}
+
+function openOut(out) {
+  api("/api/open", {out_dir: out}).then(function (data) {
+    showChapter(data);
+    showTab("view");
+  }).catch(fail);
+}
+
 // --- связки ---------------------------------------------------------
 
 function showTab(which) {
@@ -934,17 +1231,53 @@ function showTab(which) {
   $("view").style.display = which === "view" ? "" : "none";
   $("run").className = which === "run" ? "show" : "";
   $("keys").className = which === "keys" ? "show" : "";
-  ["view", "run", "keys"].forEach(function (t) {
+  $("proj").className = which === "proj" ? "show" : "";
+  ["proj", "view", "run", "keys"].forEach(function (t) {
     $("tab-" + t).className = which === t ? "on" : "";
   });
   $("viewhead").style.display = which === "view" ? "" : "none";
-  if (which !== "view" && !cfg) loadConfig().then(drawKeys).catch(fail);
+  // Состояние глав не хранится, а читается с диска: каждый заход показывает
+  // то, что там сейчас, а не то, что было при открытии проекта.
+  if (which === "proj") loadProject().catch(fail);
+  if (which === "view") return;
+  if (!cfg) loadConfig().then(afterConfig).catch(fail);
   else if (which === "keys") drawKeys();
 }
 
+function afterConfig() {
+  drawKeys();
+  if (proj) applyProject();
+}
+
+$("tab-proj").onclick = function () { showTab("proj"); };
 $("tab-view").onclick = function () { showTab("view"); };
 $("tab-run").onclick = function () { showTab("run"); };
 $("tab-keys").onclick = function () { showTab("keys"); };
+
+$("p-create").onclick = function () {
+  say("");
+  api("/api/project/create", {path: $("p-path").value.trim(),
+                              name: $("p-name").value.trim(),
+                              source: $("p-src").value.trim()})
+    .then(function (data) { takeProject(data); return loadConfig(); })
+    .then(function () {
+      // Новый проект пуст: первыми его настройками становится то, что сейчас
+      // в форме, иначе он молча остался бы без шрифта и языков.
+      saveProject();
+      say("Проект создан: " + proj.root, "ok");
+    }).catch(fail);
+};
+$("p-openbtn").onclick = function () { openProject($("p-open").value.trim()); };
+$("p-open").onkeydown = function (e) { if (e.key === "Enter") $("p-openbtn").onclick(); };
+$("p-rebind").onclick = function () {
+  api("/api/project/settings", {source: $("p-source").value.trim()})
+    .then(function (data) {
+      takeProject(data);
+      say(proj.source_ok ? "Оригиналы на месте, главы пересчитаны."
+                         : "Такой папки нет — проверьте путь.",
+          proj.source_ok ? "ok" : "err");
+    }).catch(fail);
+};
 
 $("open").onclick = function () {
   say("");
@@ -1000,6 +1333,12 @@ document.onkeydown = function (e) {
 window.onbeforeunload = function (e) {
   if (Object.keys(dirty).length) { e.preventDefault(); return ""; }
 };
+
+// Проект помнит настройки серии: если он открыт, форма запуска должна
+// показывать их, а не то, что осталось в localStorage от прошлой серии.
+loadProject().then(function () {
+  if (proj) return loadConfig().then(applyProject);
+}).catch(function () {});
 
 // Сервер мог быть запущен с папкой в аргументе — тогда глава уже открыта.
 api("/api/pages").then(showChapter).catch(function () {
