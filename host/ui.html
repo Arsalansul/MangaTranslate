@@ -427,6 +427,7 @@ var dirtyStyles = {}; // id -> ручные кегль, интерлиньяж, 
 var sel = null;       // выделенный регион
 var mode = "both";
 var previewOn = true;
+var previewFonts = {}; // PostScript-имя -> loading / loaded / failed
 var tab = "view";
 
 var proj = null;      // открытый проект: настройки, оригиналы, главы
@@ -644,11 +645,26 @@ function refreshPreviews(r) {
     preview.style.color = rgbHex(style.color || r.fg || [0, 0, 0]);
     preview.style.background = r.on_art ? "rgba(255,255,255,.18)" :
       "rgb(" + (r.bg || [255, 255, 255]).join(",") + ")";
-    preview.style.fontFamily = '"' + (effectiveFont(r) || (info && info.font) || "sans-serif") + '"';
+    var fontName = effectiveFont(r) || (info && info.font) || "";
+    preview.style.fontFamily = fontName ? ('"' + fontName + '"') : "sans-serif";
+    ensurePreviewFont(fontName);
     preview.style.textAlign = style.align || (r.keep_lines ? "left" : "center");
     preview.style.justifyContent = preview.style.textAlign === "right" ? "flex-end" :
       (preview.style.textAlign === "left" ? "flex-start" : "center");
     fitPreview(preview, style.size, style.leading, r.font_px);
+  });
+}
+
+function ensurePreviewFont(name) {
+  if (!name || previewFonts[name] || typeof FontFace === "undefined") return;
+  previewFonts[name] = "loading";
+  var face = new FontFace(name, "url('/api/font?name=" + encodeURIComponent(name) + "')");
+  face.load().then(function (loaded) {
+    document.fonts.add(loaded);
+    previewFonts[name] = "loaded";
+    refreshAllPreviews();
+  }).catch(function () {
+    previewFonts[name] = "failed";
   });
 }
 

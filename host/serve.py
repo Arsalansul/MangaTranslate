@@ -499,6 +499,22 @@ def api_img(query):
     raise ApiError(400, "Файл не похож на картинку: " + name)
 
 
+def api_font(query):
+    """Отдаёт только шрифт из fonts/, выбранный по его PostScript-имени."""
+    name = _one(query, "name")
+    for path in fontcheck._collect(fontcheck.FONTS_DIR):
+        try:
+            if fontcheck.inspect(path, sets=())["ps"] != name:
+                continue
+        except Exception:
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        ext = os.path.splitext(path)[1].lower()
+        return ("font/otf" if ext == ".otf" else "font/ttf"), data
+    raise ApiError(404, "Нет такого шрифта в fonts/: " + name)
+
+
 def api_ui(query):
     with open(os.path.join(HERE, "ui.html"), "rb") as f:
         return "text/html; charset=utf-8", f.read()
@@ -913,6 +929,7 @@ GET = {
     "/api/pages": api_pages,
     "/api/page": api_page,
     "/api/img": api_img,
+    "/api/font": api_font,
     "/api/config": api_config,
     "/api/scan": api_scan,
     "/api/project": api_project,
