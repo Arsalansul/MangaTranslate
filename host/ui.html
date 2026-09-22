@@ -83,6 +83,14 @@
     padding: 4px 5px; border: 1px solid var(--line); border-radius: 3px; }
   .reg .font { width: 100%; margin-top: 5px; padding: 3px 5px; font: inherit;
     border: 1px solid var(--line); border-radius: 3px; background: #fff; color: var(--ink); }
+  .editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px;
+    margin-top: 5px; align-items: end; }
+  .editor label { color: var(--dim); font-size: 10.5px; min-width: 0; }
+  .editor input, .editor select { display: block; width: 100%; min-width: 0; margin-top: 2px;
+    padding: 3px 4px; font: inherit; border: 1px solid var(--line); border-radius: 3px;
+    background: #fff; color: var(--ink); }
+  .editor input[type=color] { padding: 1px; height: 27px; }
+  .editor .reset { grid-column: span 2; }
   .reg.dirty textarea, .reg.dirty .font { border-color: var(--warn); background: #fffdf3; }
   .tag { border: 1px solid var(--line); border-radius: 8px; padding: 0 5px;
     background: #fff; }
@@ -408,6 +416,7 @@ var page = null;      // открытая страница целиком
 var dirty = {};       // id -> новый перевод, ещё не записанный на диск
 var dirtyPos = {};    // id -> вручную передвинутый safe_box
 var dirtyFonts = {};  // id -> PostScript-имя шрифта (пустое = общий)
+var dirtyStyles = {}; // id -> ручные кегль, интерлиньяж, выключка и цвет
 var sel = null;       // выделенный регион
 var mode = "both";
 var tab = "view";
@@ -490,7 +499,7 @@ function rowOf(stem) {
 function openPage(stem) {
   if (!confirmDrop()) return;
   api("/api/page?stem=" + encodeURIComponent(stem)).then(function (data) {
-    page = data; dirty = {}; dirtyPos = {}; dirtyFonts = {}; sel = null;
+    page = data; dirty = {}; dirtyPos = {}; dirtyFonts = {}; dirtyStyles = {}; sel = null;
     var row = rowOf(stem);
     if (row) { row.regions = data.regions.length; row.translated = data.translated;
                row.out = data.out; }
@@ -582,7 +591,8 @@ function startDrag(e, r, box) {
     else dirtyPos[r.id] = next;
     var card = document.querySelector(".reg[data-id='" + r.id + "']");
     if (card) card.classList.toggle("dirty", dirty.hasOwnProperty(r.id) ||
-      dirtyFonts.hasOwnProperty(r.id) || dirtyPos.hasOwnProperty(r.id));
+      dirtyFonts.hasOwnProperty(r.id) || dirtyStyles.hasOwnProperty(r.id) ||
+      dirtyPos.hasOwnProperty(r.id));
     [].forEach.call(document.querySelectorAll(".box[data-id='" + r.id + "']"), function (b) {
       placeBox(b, next);
     });
@@ -661,12 +671,65 @@ function drawRegions() {
     font.onchange = function () {
       if (font.value === (r.font || "")) delete dirtyFonts[r.id];
       else dirtyFonts[r.id] = font.value;
-      el.classList.toggle("dirty", dirty.hasOwnProperty(r.id) ||
-        dirtyFonts.hasOwnProperty(r.id) || dirtyPos.hasOwnProperty(r.id));
-      markDirty();
+      markCard(r.id);
     };
     font.onfocus = function () { select(r.id, false); };
     el.appendChild(font);
+
+    var editor = document.createElement("div");
+    editor.className = "editor";
+    var size = numberField(editor, "Кегль", r.typeset_size, r.font_px || "авто");
+    var leading = numberField(editor, "Интервал", r.typeset_leading, r.line_h_px || "авто");
+    var align = selectField(editor, "Выравнивание", [
+      ["", "авто"], ["left", "слева"], ["center", "центр"], ["right", "справа"]
+    ], r.typeset_align || "");
+    var color = colorField(editor, "Цвет", r.typeset_color || r.fg || [0, 0, 0]);
+    var colorTouched = r.typeset_color != null;
+    var width = numberField(editor, "Ширина рамки", positionOf(r)[2], "");
+    var height = numberField(editor, "Высота рамки", positionOf(r)[3], "");
+    var reset = document.createElement("button");
+    reset.type = "button"; reset.className = "reset"; reset.textContent = "Сбросить оформление";
+    editor.appendChild(reset);
+    [size, leading, align, color, width, height].forEach(function (input) {
+      input.onfocus = function () { select(r.id, false); };
+    });
+    function changeStyle() {
+      var style = {
+        size: positiveOrNull(size.value), leading: positiveOrNull(leading.value),
+        align: align.value || null, color: colorTouched ? hexRgb(color.value) : null
+      };
+      if (sameStyle(style, originalStyle(r))) delete dirtyStyles[r.id];
+      else dirtyStyles[r.id] = style;
+      markCard(r.id);
+    }
+    size.oninput = leading.oninput = align.onchange = changeStyle;
+    color.oninput = function () { colorTouched = true; changeStyle(); };
+    function changeFrame() {
+      var old = positionOf(r), w = positiveOrNull(width.value), h = positiveOrNull(height.value);
+      if (w === null || h === null) return;
+      w = Math.min(page.width, w); h = Math.min(page.height, h);
+      var next = [Math.min(old[0], page.width - w), Math.min(old[1], page.height - h), w, h];
+      if (sameBox(next, r.safe_box || r.bbox)) delete dirtyPos[r.id];
+      else dirtyPos[r.id] = next;
+      [].forEach.call(document.querySelectorAll(".box[data-id='" + r.id + "']"), function (b) {
+        placeBox(b, next);
+      });
+      markCard(r.id);
+    }
+    width.onchange = height.onchange = changeFrame;
+    reset.onclick = function () {
+      size.value = ""; leading.value = ""; align.value = "";
+      color.value = rgbHex(r.fg || [0, 0, 0]);
+      colorTouched = false;
+      var cleared = {size: null, leading: null, align: null, color: null};
+      if (sameStyle(cleared, originalStyle(r))) delete dirtyStyles[r.id];
+      else dirtyStyles[r.id] = cleared;
+      font.value = "";
+      if ((r.font || "") === "") delete dirtyFonts[r.id];
+      else dirtyFonts[r.id] = "";
+      markCard(r.id);
+    };
+    el.appendChild(editor);
 
     box.appendChild(el);
   });
@@ -678,17 +741,75 @@ function addOption(select, value, label) {
   option.value = value; option.textContent = label; select.appendChild(option);
 }
 
+function fieldLabel(editor, text, input) {
+  var label = document.createElement("label");
+  label.textContent = text; label.appendChild(input); editor.appendChild(label); return input;
+}
+
+function numberField(editor, label, value, placeholder) {
+  var input = document.createElement("input");
+  input.type = "number"; input.min = "1"; input.max = "1000"; input.step = "1";
+  input.value = value == null ? "" : value; input.placeholder = String(placeholder || "");
+  return fieldLabel(editor, label, input);
+}
+
+function selectField(editor, label, options, value) {
+  var select = document.createElement("select");
+  options.forEach(function (o) { addOption(select, o[0], o[1]); });
+  select.value = value; return fieldLabel(editor, label, select);
+}
+
+function colorField(editor, label, rgb) {
+  var input = document.createElement("input"); input.type = "color"; input.value = rgbHex(rgb);
+  return fieldLabel(editor, label, input);
+}
+
+function positiveOrNull(value) {
+  if (value === "") return null;
+  var n = Math.round(Number(value)); return isFinite(n) && n > 0 ? n : null;
+}
+
+function rgbHex(rgb) {
+  return "#" + rgb.map(function (v) {
+    return ("0" + Math.max(0, Math.min(255, Math.round(v))).toString(16)).slice(-2);
+  }).join("");
+}
+
+function hexRgb(hex) {
+  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16),
+          parseInt(hex.slice(5, 7), 16)];
+}
+
+function originalStyle(r) {
+  return {size: r.typeset_size == null ? null : r.typeset_size,
+          leading: r.typeset_leading == null ? null : r.typeset_leading,
+          align: r.typeset_align || null,
+          color: r.typeset_color || null};
+}
+
+function sameStyle(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+function markCard(id) {
+  var card = document.querySelector(".reg[data-id='" + id + "']");
+  if (card) card.classList.toggle("dirty", dirty.hasOwnProperty(id) ||
+    dirtyFonts.hasOwnProperty(id) || dirtyStyles.hasOwnProperty(id) ||
+    dirtyPos.hasOwnProperty(id));
+  markDirty();
+}
+
 function edit(r, value, el) {
   if (value === r.translation) delete dirty[r.id];
   else dirty[r.id] = value;
   el.classList.toggle("dirty", dirty.hasOwnProperty(r.id) ||
-    dirtyFonts.hasOwnProperty(r.id) || dirtyPos.hasOwnProperty(r.id));
+    dirtyFonts.hasOwnProperty(r.id) || dirtyStyles.hasOwnProperty(r.id) ||
+    dirtyPos.hasOwnProperty(r.id));
   markDirty();
 }
 
 function markDirty() {
   var ids = {};
-  Object.keys(dirty).concat(Object.keys(dirtyPos), Object.keys(dirtyFonts)).forEach(function (id) {
+  Object.keys(dirty).concat(Object.keys(dirtyPos), Object.keys(dirtyFonts),
+    Object.keys(dirtyStyles)).forEach(function (id) {
     ids[id] = true;
   });
   var n = Object.keys(ids).length;
@@ -725,10 +846,10 @@ function drawFoot() {
 
 function save() {
   if (!page || (!Object.keys(dirty).length && !Object.keys(dirtyPos).length &&
-                !Object.keys(dirtyFonts).length)) return;
+                !Object.keys(dirtyFonts).length && !Object.keys(dirtyStyles).length)) return;
   api("/api/page", {stem: page.stem, edits: dirty, positions: dirtyPos,
-                     fonts: dirtyFonts}).then(function (data) {
-    page = data; dirty = {}; dirtyPos = {}; dirtyFonts = {};
+                     fonts: dirtyFonts, styles: dirtyStyles}).then(function (data) {
+    page = data; dirty = {}; dirtyPos = {}; dirtyFonts = {}; dirtyStyles = {};
     var row = rowOf(data.stem);
     if (row) { row.regions = data.regions.length; row.translated = data.translated; }
     // Перерисовываем и сцену: обработчики drag замыкаются на координаты
@@ -742,7 +863,7 @@ function save() {
 
 function confirmDrop() {
   return (!Object.keys(dirty).length && !Object.keys(dirtyPos).length &&
-          !Object.keys(dirtyFonts).length) ||
+          !Object.keys(dirtyFonts).length && !Object.keys(dirtyStyles).length) ||
     confirm("Есть несохранённые правки. Уйти со страницы и потерять их?");
 }
 
@@ -1415,7 +1536,9 @@ document.onkeydown = function (e) {
 };
 window.onbeforeunload = function (e) {
   if (Object.keys(dirty).length || Object.keys(dirtyPos).length ||
-      Object.keys(dirtyFonts).length) { e.preventDefault(); return ""; }
+      Object.keys(dirtyFonts).length || Object.keys(dirtyStyles).length) {
+    e.preventDefault(); return "";
+  }
 };
 
 // Проект помнит настройки серии: если он открыт, форма запуска должна

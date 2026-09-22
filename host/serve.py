@@ -310,6 +310,12 @@ def _brief(r):
         "translation": r.get("translation") or "",
         "font": r.get("font") or "",
         "font_px": int(r.get("font_px") or 0),
+        "line_h_px": int(r.get("line_h_px") or 0),
+        "fg": r.get("fg") or [0, 0, 0],
+        "typeset_size": r.get("typeset_size"),
+        "typeset_leading": r.get("typeset_leading"),
+        "typeset_align": r.get("typeset_align") or "",
+        "typeset_color": r.get("typeset_color"),
         "conf": round(float(r.get("conf") or 0.0), 2),
         # Правило «что вообще переводится» живёт в translate.py в одном
         # экземпляре; повторять его в JavaScript нельзя — разъедется.
@@ -376,6 +382,9 @@ def api_save(body):
     fonts = body.get("fonts", {})
     if not isinstance(fonts, dict):
         raise ApiError(400, "fonts должен быть объектом {id: шрифт}")
+    styles = body.get("styles", {})
+    if not isinstance(styles, dict):
+        raise ApiError(400, "styles должен быть объектом {id: оформление}")
 
     path, analysis = _read(stem)
     by_id = {r.get("id"): r for r in analysis.get("regions", [])}
@@ -427,6 +436,39 @@ def api_save(body):
             region["font"] = font
         else:
             region.pop("font", None)
+        if rid not in saved:
+            saved.append(rid)
+    for rid, style in styles.items():
+        region = by_id.get(rid)
+        if region is None:
+            if rid not in unknown:
+                unknown.append(rid)
+            continue
+        if not isinstance(style, dict):
+            raise ApiError(400, "Оформление должно быть объектом: " + str(rid))
+        size, leading = style.get("size"), style.get("leading")
+        align, color = style.get("align"), style.get("color")
+        for field, value in (("size", size), ("leading", leading)):
+            if value is not None and (isinstance(value, bool) or
+                                      not isinstance(value, (int, float)) or value <= 0 or value > 1000):
+                raise ApiError(400, "%s должен быть числом от 1 до 1000: %s" % (field, rid))
+        if align not in (None, "", "left", "center", "right"):
+            raise ApiError(400, "Неизвестное выравнивание: " + str(align))
+        if color is not None and (not isinstance(color, list) or len(color) != 3 or
+                                  any(isinstance(v, bool) or not isinstance(v, (int, float)) or
+                                      v < 0 or v > 255 for v in color)):
+            raise ApiError(400, "Цвет должен быть RGB [0..255]: " + str(rid))
+        values = {
+            "typeset_size": int(round(size)) if size is not None else None,
+            "typeset_leading": int(round(leading)) if leading is not None else None,
+            "typeset_align": align or None,
+            "typeset_color": [int(round(v)) for v in color] if color is not None else None,
+        }
+        for key, value in values.items():
+            if value is None:
+                region.pop(key, None)
+            else:
+                region[key] = value
         if rid not in saved:
             saved.append(rid)
     if saved:

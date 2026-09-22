@@ -50,23 +50,28 @@ def _region_literal(r: Dict[str, Any]) -> str:
     poly = r.get("mask_poly") or [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
     poly_js = "[" + ",".join("[%d,%d]" % (p[0], p[1]) for p in poly) + "]"
     fg = r.get("fg") or [0, 0, 0]
+    color = r.get("typeset_color") or fg
     bg = r.get("bg") or [255, 255, 255]
     # Стираем по bbox/полигону, а верстаем по safe_box: стереть надо ровно
     # бывший текст, а поставить — с запасом, который даёт балун.
     sx, sy, sw, sh = r.get("safe_box") or [x, y, w, h]
     return (
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
-        "size:%d,lead:%d,kind:%s,font:%s,onArt:%s,keep:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "size:%d,lead:%d,fixedSize:%d,fixedLead:%d,kind:%s,font:%s,align:%s,"
+        "onArt:%s,keep:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
             int(r.get("font_px") or 24),
             int(r.get("line_h_px") or 0),
+            int(r.get("typeset_size") or 0),
+            int(r.get("typeset_leading") or 0),
             esc(r.get("kind") or "unknown"),
             esc(r.get("font") or ""),
+            esc(r.get("typeset_align") or ""),
             "true" if r.get("on_art") else "false",
             "true" if r.get("keep_lines") else "false",
-            fg[0], fg[1], fg[2],
+            color[0], color[1], color[2],
             bg[0], bg[1], bg[2],
         )
     )
@@ -170,13 +175,21 @@ function languageOf() {
 // глифов и так на пару пикселей гуляет вокруг рамки от кернинга и округления.
 // Строгое сравнение заваливало подгон на ровном месте и гнало кегль в минимум,
 // поэтому допуск — доля кегля: торчащее слово шире него на порядок.
-function fitText(tl, boxW, boxH, maxSize, minSize) {
+function fitText(tl, boxW, boxH, maxSize, minSize, fixedSize, fixedLead) {
   var ti = tl.textItem;
   ti.width = boxW * K;
   ti.height = boxH * 6 * K;
+  if (fixedSize > 0) {
+    ti.size = fixedSize * K;
+    ti.leading = (fixedLead > 0 ? fixedLead : Math.round(fixedSize * 1.18)) * K;
+    var fb = tl.bounds;
+    var fth = parseFloat(fb[3]) - parseFloat(fb[1]);
+    var ftw = parseFloat(fb[2]) - parseFloat(fb[0]);
+    return {size: fixedSize, textH: (fth <= boxH && ftw <= boxW + Math.max(2, Math.round(fixedSize * 0.3))) ? fth : -1};
+  }
   for (var s = maxSize; s >= minSize; s--) {
     ti.size = s * K;
-    ti.leading = Math.round(s * 1.18) * K;
+    ti.leading = (fixedLead > 0 ? fixedLead : Math.round(s * 1.18)) * K;
     var b = tl.bounds;
     var th = parseFloat(b[3]) - parseFloat(b[1]);
     var tw = parseFloat(b[2]) - parseFloat(b[0]);
@@ -185,7 +198,7 @@ function fitText(tl, boxW, boxH, maxSize, minSize) {
     }
   }
   ti.size = minSize * K;
-  ti.leading = Math.round(minSize * 1.18) * K;
+  ti.leading = (fixedLead > 0 ? fixedLead : Math.round(minSize * 1.18)) * K;
   return { size: minSize, textH: -1 };
 }
 """
@@ -305,7 +318,10 @@ step('typeset_all', function () {
       ti.font = chosenFont;
       // Реплика центруется, список — нет: у содержания и титров левый край
       // ровный, и переносить его в центр значит разъехаться с линейками.
-      ti.justification = r.keep ? Justification.LEFT : Justification.CENTER;
+      ti.justification = r.align == 'left' ? Justification.LEFT
+        : r.align == 'right' ? Justification.RIGHT
+        : r.align == 'center' ? Justification.CENTER
+        : (r.keep ? Justification.LEFT : Justification.CENTER);
       ti.hyphenation = !r.keep;
       try { setLanguage(LANG); if (!lang) lang = languageOf(); }
       catch (e) { if (!lang) lang = 'failed: ' + e; }
@@ -315,7 +331,7 @@ step('typeset_all', function () {
       ti.position = [r.sx, r.sy];
 
       var startSize = Math.max(MIN_SIZE + 1, Math.round(r.size * 1.1));
-      var fit = fitText(tl, r.sw, r.sh, startSize, MIN_SIZE);
+      var fit = fitText(tl, r.sw, r.sh, startSize, MIN_SIZE, r.fixedSize, r.fixedLead);
       if (fit.textH < 0) overflow.push(r.id);
 
       // Ставим настоящую рамку и центрируем текст по вертикали.
