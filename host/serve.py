@@ -304,6 +304,7 @@ def _brief(r):
     return {
         "id": r.get("id"),
         "bbox": r.get("bbox") or [0, 0, 0, 0],
+        "safe_box": r.get("safe_box") or r.get("bbox") or [0, 0, 0, 0],
         "kind": r.get("kind") or "unknown",
         "text": r.get("text") or "",
         "translation": r.get("translation") or "",
@@ -359,7 +360,7 @@ def api_page(query):
 
 
 def api_save(body):
-    """Пишем ровно одно поле у ровно тех регионов, что есть в файле."""
+    """Пишем переводы и вручную поправленные области текста."""
     _opened()
     _idle()
     stem = body.get("stem")
@@ -368,6 +369,9 @@ def api_save(body):
     edits = body.get("edits")
     if not isinstance(edits, dict):
         raise ApiError(400, "edits должен быть объектом {id: перевод}")
+    positions = body.get("positions", {})
+    if not isinstance(positions, dict):
+        raise ApiError(400, "positions должен быть объектом {id: [x, y, w, h]}")
 
     path, analysis = _read(stem)
     by_id = {r.get("id"): r for r in analysis.get("regions", [])}
@@ -384,6 +388,26 @@ def api_save(body):
         # Пустая строка — осмысленное значение: регион не будет стёрт вовсе.
         region["translation"] = text
         saved.append(rid)
+    for rid, box in positions.items():
+        region = by_id.get(rid)
+        if region is None:
+            if rid not in unknown:
+                unknown.append(rid)
+            continue
+        if (not isinstance(box, list) or len(box) != 4 or
+                any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in box)):
+            raise ApiError(400, "Позиция должна быть [x, y, w, h]: " + str(rid))
+        x, y, w, h = [int(round(v)) for v in box]
+        if w <= 0 or h <= 0:
+            raise ApiError(400, "Ширина и высота позиции должны быть положительными: " + str(rid))
+        # Рамку целиком держим на странице: случайный рывок мыши не должен
+        # унести текст за холст и сделать его недоступным для следующей правки.
+        w, h = min(w, int(analysis.get("width") or w)), min(h, int(analysis.get("height") or h))
+        x = max(0, min(x, int(analysis.get("width") or (x + w)) - w))
+        y = max(0, min(y, int(analysis.get("height") or (y + h)) - h))
+        region["safe_box"] = [x, y, w, h]
+        if rid not in saved:
+            saved.append(rid)
     if saved:
         run._save(path, analysis)
 
