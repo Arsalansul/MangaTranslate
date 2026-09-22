@@ -91,6 +91,7 @@
     background: #fff; color: var(--ink); }
   .editor input[type=color] { padding: 1px; height: 27px; }
   .editor .reset { grid-column: span 2; }
+  .reg .font[hidden], .reg .editor[hidden] { display: none; }
   .reg.dirty textarea, .reg.dirty .font { border-color: var(--warn); background: #fffdf3; }
   .tag { border: 1px solid var(--line); border-radius: 8px; padding: 0 5px;
     background: #fff; }
@@ -656,7 +657,10 @@ function drawRegions() {
     var ta = document.createElement("textarea");
     ta.value = r.translation;
     ta.spellcheck = false;
-    ta.oninput = function () { edit(r, ta.value, el); };
+    ta.oninput = function () {
+      edit(r, ta.value, el);
+      toggleTextTools(ta, font, editor);
+    };
     ta.onfocus = function () { select(r.id, false); };
     el.appendChild(ta);
 
@@ -730,6 +734,7 @@ function drawRegions() {
       markCard(r.id);
     };
     el.appendChild(editor);
+    toggleTextTools(ta, font, editor);
 
     box.appendChild(el);
   });
@@ -739,6 +744,12 @@ function drawRegions() {
 function addOption(select, value, label) {
   var option = document.createElement("option");
   option.value = value; option.textContent = label; select.appendChild(option);
+}
+
+function toggleTextTools(textarea, font, editor) {
+  var hidden = !textarea.value.trim();
+  font.hidden = hidden;
+  editor.hidden = hidden;
 }
 
 function fieldLabel(editor, text, input) {
