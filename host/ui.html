@@ -816,7 +816,7 @@ function drawRegions() {
     el.appendChild(orig);
 
     var ta = document.createElement("textarea");
-    ta.value = r.translation;
+    ta.value = effectiveText(r);
     ta.spellcheck = false;
     ta.oninput = function () {
       edit(r, ta.value, el);
@@ -833,7 +833,7 @@ function drawRegions() {
     if (r.font && ![].some.call(font.options, function (o) { return o.value === r.font; })) {
       addOption(font, r.font, r.font + " — нет в fonts/");
     }
-    font.value = r.font || "";
+    font.value = effectiveFont(r);
     font.onchange = function () {
       if (font.value === (r.font || "")) delete dirtyFonts[r.id];
       else dirtyFonts[r.id] = font.value;
@@ -845,13 +845,14 @@ function drawRegions() {
 
     var editor = document.createElement("div");
     editor.className = "editor";
-    var size = numberField(editor, "Кегль", r.typeset_size, r.font_px || "авто");
-    var leading = numberField(editor, "Интервал", r.typeset_leading, r.line_h_px || "авто");
+    var currentStyle = effectiveStyle(r);
+    var size = numberField(editor, "Кегль", currentStyle.size, r.font_px || "авто");
+    var leading = numberField(editor, "Интервал", currentStyle.leading, r.line_h_px || "авто");
     var align = selectField(editor, "Выравнивание", [
       ["", "авто"], ["left", "слева"], ["center", "центр"], ["right", "справа"]
-    ], r.typeset_align || "");
-    var color = colorField(editor, "Цвет", r.typeset_color || r.fg || [0, 0, 0]);
-    var colorTouched = r.typeset_color != null;
+    ], currentStyle.align || "");
+    var color = colorField(editor, "Цвет", currentStyle.color || r.fg || [0, 0, 0]);
+    var colorTouched = currentStyle.color != null;
     var width = numberField(editor, "Ширина рамки", positionOf(r)[2], "");
     var height = numberField(editor, "Высота рамки", positionOf(r)[3], "");
     var reset = document.createElement("button");
