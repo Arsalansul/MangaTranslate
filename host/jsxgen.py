@@ -58,7 +58,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
     return (
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
         "size:%d,lead:%d,fixedSize:%d,fixedLead:%d,kind:%s,font:%s,align:%s,"
-        "onArt:%s,keep:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "onArt:%s,keep:%s,forceErase:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
@@ -71,6 +71,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
             esc(r.get("typeset_align") or ""),
             "true" if r.get("on_art") else "false",
             "true" if r.get("keep_lines") else "false",
+            "true" if r.get("erase_only") else "false",
             color[0], color[1], color[2],
             bg[0], bg[1], bg[2],
         )
@@ -281,7 +282,7 @@ step('erase_all', function () {
     var r = REGIONS[i];
     // Регион без перевода не трогаем: заливка без замены только портит
     // рисунок. Так остаются нетронутыми звуки и мусорные находки.
-    if (!ERASE_ALL && (!r.txt || r.txt.length === 0)) { kept++; continue; }
+    if (!ERASE_ALL && !r.forceErase && (!r.txt || r.txt.length === 0)) { kept++; continue; }
     if (ERASE_IDS !== null && !inList(r.id, ERASE_IDS)) { kept++; continue; }
     try {
       doc.selection.select(r.poly);

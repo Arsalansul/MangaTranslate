@@ -101,8 +101,17 @@ def clean(analysis: dict, src_img: str, out_path: str, force: bool = False) -> d
     заплатку из кусков той же страницы, а страница в этот момент ещё полна
     текста, и в дыру приезжали буквы из соседних панелей.
     """
+    # Область ручной очистки не содержит перевода, но для /inpaint должна
+    # выглядеть целью. Маркер живёт только в копии запроса: в analysis.json
+    # поле translation остаётся пустым и текстовый слой не создаётся.
+    regions = []
+    for region in analysis["regions"]:
+        item = dict(region)
+        if item.get("erase_only"):
+            item["translation"] = "__erase__"
+        regions.append(item)
     req = _upload("/inpaint", src_img, {
-        "regions": json.dumps(analysis["regions"], ensure_ascii=False),
+        "regions": json.dumps(regions, ensure_ascii=False),
         "force": "true" if force else "false",
     })
     with urllib.request.urlopen(req, timeout=1800) as resp:

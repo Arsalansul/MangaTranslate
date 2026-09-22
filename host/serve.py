@@ -315,6 +315,7 @@ def _brief(r):
         "fg": r.get("fg") or [0, 0, 0],
         "bg": r.get("bg") or [255, 255, 255],
         "on_art": bool(r.get("on_art")),
+        "erase_only": bool(r.get("erase_only")),
         "typeset_size": r.get("typeset_size"),
         "typeset_leading": r.get("typeset_leading"),
         "typeset_align": r.get("typeset_align") or "",
@@ -388,8 +389,36 @@ def api_save(body):
     styles = body.get("styles", {})
     if not isinstance(styles, dict):
         raise ApiError(400, "styles должен быть объектом {id: оформление}")
+    creates = body.get("creates", [])
+    deletes = body.get("deletes", [])
+    if not isinstance(creates, list) or not isinstance(deletes, list):
+        raise ApiError(400, "creates и deletes должны быть массивами")
 
     path, analysis = _read(stem)
+    page_w, page_h = int(analysis.get("width") or 0), int(analysis.get("height") or 0)
+    used = {r.get("id") for r in analysis.get("regions", [])}
+    for item in creates:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise ApiError(400, "У новой области нужны id и bbox")
+        rid, box = item["id"], item.get("bbox")
+        if rid in used or not rid.startswith("manual-"):
+            raise ApiError(400, "Некорректный или занятый id новой области: " + rid)
+        if (not isinstance(box, list) or len(box) != 4 or
+                any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in box)):
+            raise ApiError(400, "bbox новой области должен быть [x, y, w, h]")
+        x, y, w, h = [int(round(v)) for v in box]
+        if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > page_w or y + h > page_h:
+            raise ApiError(400, "Новая область выходит за границы страницы: " + rid)
+        analysis.setdefault("regions", []).append({
+            "id": rid, "bbox": [x, y, w, h], "safe_box": [x, y, w, h],
+            "mask_poly": [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
+            "text": "", "translation": "", "kind": "cleanup", "erase_only": True,
+            # Ручная область неизвестна детектору: безопаснее инпейнт, чем
+            # залить её белым и уничтожить рисунок.
+            "on_art": True, "font_px": 0, "line_h_px": 0,
+            "fg": [0, 0, 0], "bg": [255, 255, 255], "conf": 1.0,
+        })
+        used.add(rid)
     by_id = {r.get("id"): r for r in analysis.get("regions", [])}
     saved, unknown = [], []
     for rid, text in edits.items():
@@ -474,6 +503,22 @@ def api_save(body):
                 region[key] = value
         if rid not in saved:
             saved.append(rid)
+    delete_set = set()
+    for rid in deletes:
+        if not isinstance(rid, str):
+            raise ApiError(400, "id удаляемой области должен быть строкой")
+        if rid not in by_id:
+            if rid not in unknown:
+                unknown.append(rid)
+        else:
+            delete_set.add(rid)
+    if delete_set:
+        analysis["regions"] = [r for r in analysis.get("regions", [])
+                               if r.get("id") not in delete_set]
+        saved.extend(rid for rid in delete_set if rid not in saved)
+    for item in creates:
+        if item["id"] not in saved:
+            saved.append(item["id"])
     if saved:
         run._save(path, analysis)
 
