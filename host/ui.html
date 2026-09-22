@@ -584,7 +584,7 @@ function side(kind, name, caption) {
     b.onpointerdown = function (e) { startDrag(e, r, b); };
     holder.appendChild(b);
   });
-  holder.classList.toggle("no-preview", !previewOn);
+  holder.classList.toggle("no-preview", !previewOn || kind === "src");
   holder.classList.toggle("draw-cleanup", !!drawMode);
   holder.onpointerdown = function (e) { beginRegionDraw(e, holder); };
   fig.appendChild(holder);
@@ -1676,7 +1676,8 @@ $("preview").onclick = function () {
   previewOn = !previewOn;
   $("preview").className = previewOn ? "on" : "";
   [].forEach.call(document.querySelectorAll("#stage .holder"), function (holder) {
-    holder.classList.toggle("no-preview", !previewOn);
+    var fig = holder.parentNode;
+    holder.classList.toggle("no-preview", !previewOn || fig.dataset.kind === "src");
   });
   if (previewOn) refreshAllPreviews();
 };
