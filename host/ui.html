@@ -62,6 +62,11 @@
   .box.sel { border-color: #1b6; background: rgba(30,190,110,.18);
     box-shadow: 0 0 0 1px #1b6; }
   .box.none { border-style: dashed; border-color: rgba(120,120,120,.5); }
+  .preview-text { position: absolute; inset: 0; display: flex; align-items: center;
+    overflow: hidden; pointer-events: none; padding: 0; line-height: 1.18;
+    white-space: pre-wrap; overflow-wrap: anywhere; text-shadow: 0 0 1px rgba(255,255,255,.35); }
+  .preview-text > span { display: block; width: 100%; }
+  .holder.no-preview .preview-text { display: none; }
 
   #side { width: 400px; display: flex; flex-direction: column;
     background: var(--panel); border-left: 1px solid var(--line); }
@@ -233,6 +238,7 @@
       <button data-mode="src">оригинал</button>
       <button data-mode="out">результат</button>
       <button data-mode="both" class="on">рядом</button>
+      <button id="preview" class="on" title="Приблизительный предпросмотр в браузере">предпросмотр</button>
       <span class="meta" id="pos"></span>
       <span style="flex:1"></span>
       <button id="prev" title="←">←</button>
@@ -420,6 +426,7 @@ var dirtyFonts = {};  // id -> PostScript-имя шрифта (пустое = о
 var dirtyStyles = {}; // id -> ручные кегль, интерлиньяж, выключка и цвет
 var sel = null;       // выделенный регион
 var mode = "both";
+var previewOn = true;
 var tab = "view";
 
 var proj = null;      // открытый проект: настройки, оригиналы, главы
@@ -554,12 +561,18 @@ function side(kind, name, caption) {
     b.dataset.id = r.id;
     placeBox(b, positionOf(r));
     b.title = r.id + ": " + r.text;
+    var preview = document.createElement("div");
+    preview.className = "preview-text";
+    preview.appendChild(document.createElement("span"));
+    b.appendChild(preview);
     b.onclick = function () { if (!b._dragged) select(r.id, true); b._dragged = false; };
     b.onpointerdown = function (e) { startDrag(e, r, b); };
     holder.appendChild(b);
   });
+  holder.classList.toggle("no-preview", !previewOn);
   fig.appendChild(holder);
   $("stage").appendChild(fig);
+  page.regions.forEach(refreshPreviews);
 }
 
 function positionOf(r) {
@@ -608,6 +621,57 @@ function startDrag(e, r, box) {
 
 function sameBox(a, b) {
   return a.length === b.length && a.every(function (v, i) { return v === b[i]; });
+}
+
+function effectiveText(r) {
+  return dirty.hasOwnProperty(r.id) ? dirty[r.id] : r.translation;
+}
+
+function effectiveFont(r) {
+  return dirtyFonts.hasOwnProperty(r.id) ? dirtyFonts[r.id] : (r.font || "");
+}
+
+function effectiveStyle(r) {
+  return dirtyStyles.hasOwnProperty(r.id) ? dirtyStyles[r.id] : originalStyle(r);
+}
+
+function refreshPreviews(r) {
+  [].forEach.call(document.querySelectorAll(".box[data-id='" + r.id + "']"), function (box) {
+    var preview = box.querySelector(".preview-text"), span = preview && preview.firstChild;
+    if (!preview || !span) return;
+    var text = effectiveText(r) || "", style = effectiveStyle(r);
+    span.textContent = text;
+    preview.style.color = rgbHex(style.color || r.fg || [0, 0, 0]);
+    preview.style.background = r.on_art ? "rgba(255,255,255,.18)" :
+      "rgb(" + (r.bg || [255, 255, 255]).join(",") + ")";
+    preview.style.fontFamily = '"' + (effectiveFont(r) || (info && info.font) || "sans-serif") + '"';
+    preview.style.textAlign = style.align || (r.keep_lines ? "left" : "center");
+    preview.style.justifyContent = preview.style.textAlign === "right" ? "flex-end" :
+      (preview.style.textAlign === "left" ? "flex-start" : "center");
+    fitPreview(preview, style.size, style.leading, r.font_px);
+  });
+}
+
+function fitPreview(preview, fixedSize, fixedLeading, detectedSize) {
+  if (!preview.textContent) return;
+  var box = preview.parentNode, holder = box.parentNode;
+  var scale = holder.clientWidth / page.width;
+  if (!scale || !box.clientWidth || !box.clientHeight) return;
+  var size = fixedSize || Math.max(10, Math.round((detectedSize || 20) * 1.1));
+  var min = fixedSize ? size : 9;
+  function apply(n) {
+    preview.style.fontSize = (n * scale) + "px";
+    preview.style.lineHeight = ((fixedLeading || Math.round(n * 1.18)) * scale) + "px";
+  }
+  apply(size);
+  if (!fixedSize) {
+    while (size > min && (preview.scrollHeight > box.clientHeight + 1 ||
+           preview.scrollWidth > box.clientWidth + 1)) { size--; apply(size); }
+  }
+}
+
+function refreshAllPreviews() {
+  if (page) page.regions.forEach(refreshPreviews);
 }
 
 function applyMode() {
@@ -660,6 +724,7 @@ function drawRegions() {
     ta.oninput = function () {
       edit(r, ta.value, el);
       toggleTextTools(ta, font, editor);
+      refreshPreviews(r);
     };
     ta.onfocus = function () { select(r.id, false); };
     el.appendChild(ta);
@@ -676,6 +741,7 @@ function drawRegions() {
       if (font.value === (r.font || "")) delete dirtyFonts[r.id];
       else dirtyFonts[r.id] = font.value;
       markCard(r.id);
+      refreshPreviews(r);
     };
     font.onfocus = function () { select(r.id, false); };
     el.appendChild(font);
@@ -705,6 +771,7 @@ function drawRegions() {
       if (sameStyle(style, originalStyle(r))) delete dirtyStyles[r.id];
       else dirtyStyles[r.id] = style;
       markCard(r.id);
+      refreshPreviews(r);
     }
     size.oninput = leading.oninput = align.onchange = changeStyle;
     color.oninput = function () { colorTouched = true; changeStyle(); };
@@ -719,6 +786,7 @@ function drawRegions() {
         placeBox(b, next);
       });
       markCard(r.id);
+      refreshPreviews(r);
     }
     width.onchange = height.onchange = changeFrame;
     reset.onclick = function () {
@@ -732,6 +800,7 @@ function drawRegions() {
       if ((r.font || "") === "") delete dirtyFonts[r.id];
       else dirtyFonts[r.id] = "";
       markCard(r.id);
+      refreshPreviews(r);
     };
     el.appendChild(editor);
     toggleTextTools(ta, font, editor);
@@ -1501,6 +1570,14 @@ $("open").onclick = function () {
 $("dir").onkeydown = function (e) { if (e.key === "Enter") $("open").onclick(); };
 $("save").onclick = save;
 $("retype").onclick = retypeset;
+$("preview").onclick = function () {
+  previewOn = !previewOn;
+  $("preview").className = previewOn ? "on" : "";
+  [].forEach.call(document.querySelectorAll("#stage .holder"), function (holder) {
+    holder.classList.toggle("no-preview", !previewOn);
+  });
+  if (previewOn) refreshAllPreviews();
+};
 $("prev").onclick = function () { step(-1); };
 $("next").onclick = function () { step(1); };
 [].forEach.call(document.querySelectorAll("#bar button[data-mode]"), function (b) {
@@ -1551,6 +1628,7 @@ window.onbeforeunload = function (e) {
     e.preventDefault(); return "";
   }
 };
+window.addEventListener("resize", refreshAllPreviews);
 
 // Проект помнит настройки серии: если он открыт, форма запуска должна
 // показывать их, а не то, что осталось в localStorage от прошлой серии.
