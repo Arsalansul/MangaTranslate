@@ -316,6 +316,7 @@ def _brief(r):
         "bg": r.get("bg") or [255, 255, 255],
         "on_art": bool(r.get("on_art")),
         "erase_only": bool(r.get("erase_only")),
+        "manual_text": bool(r.get("manual_text")),
         "typeset_size": r.get("typeset_size"),
         "typeset_leading": r.get("typeset_leading"),
         "typeset_align": r.get("typeset_align") or "",
@@ -409,10 +410,14 @@ def api_save(body):
         x, y, w, h = [int(round(v)) for v in box]
         if w <= 0 or h <= 0 or x < 0 or y < 0 or x + w > page_w or y + h > page_h:
             raise ApiError(400, "Новая область выходит за границы страницы: " + rid)
+        cleanup = item.get("erase_only", True)
+        if not isinstance(cleanup, bool):
+            raise ApiError(400, "erase_only новой области должен быть true или false")
         analysis.setdefault("regions", []).append({
             "id": rid, "bbox": [x, y, w, h], "safe_box": [x, y, w, h],
             "mask_poly": [[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
-            "text": "", "translation": "", "kind": "cleanup", "erase_only": True,
+            "text": "", "translation": "", "kind": "cleanup" if cleanup else "unknown",
+            "erase_only": cleanup, "manual_text": not cleanup,
             # Ручная область неизвестна детектору: безопаснее инпейнт, чем
             # залить её белым и уничтожить рисунок.
             "on_art": True, "font_px": 0, "line_h_px": 0,

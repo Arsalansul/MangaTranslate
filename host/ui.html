@@ -63,6 +63,7 @@
     box-shadow: 0 0 0 1px #1b6; }
   .box.none { border-style: dashed; border-color: rgba(120,120,120,.5); }
   .box.cleanup { border: 2px dashed #2868a8; background: rgba(50,125,205,.16); }
+  .box.manual-text { border: 2px dashed #8a4da8; }
   .holder.draw-cleanup { cursor: crosshair; }
   .draft-cleanup { position: absolute; border: 2px dashed #2868a8;
     background: rgba(50,125,205,.22); pointer-events: none; }
@@ -246,6 +247,7 @@
       <button data-mode="both" class="on">рядом</button>
       <button id="preview" class="on" title="Приблизительный предпросмотр в браузере">предпросмотр</button>
       <button id="add-cleanup" title="Нарисовать прямоугольник, который нужно очистить">+ очистка</button>
+      <button id="add-text" title="Нарисовать новую область с текстом">+ текст</button>
       <span class="meta" id="pos"></span>
       <span style="flex:1"></span>
       <button id="prev" title="←">←</button>
@@ -436,7 +438,7 @@ var dirtyDeletes = {}; // id -> удалить ложную область
 var sel = null;       // выделенный регион
 var mode = "both";
 var previewOn = true;
-var cleanupDraw = false;
+var drawMode = ""; // cleanup / text / пусто
 var previewFonts = {}; // PostScript-имя -> loading / loaded / failed
 var tab = "view";
 
@@ -569,7 +571,8 @@ function side(kind, name, caption) {
   }
   page.regions.forEach(function (r) {
     var b = document.createElement("div");
-    b.className = "box" + (r.translatable ? "" : " none") + (r.erase_only ? " cleanup" : "");
+    b.className = "box" + (r.translatable ? "" : " none") +
+      (r.erase_only ? " cleanup" : "") + (r.manual_text ? " manual-text" : "");
     b.dataset.id = r.id;
     placeBox(b, positionOf(r));
     b.title = r.id + ": " + r.text;
@@ -582,8 +585,8 @@ function side(kind, name, caption) {
     holder.appendChild(b);
   });
   holder.classList.toggle("no-preview", !previewOn);
-  holder.classList.toggle("draw-cleanup", cleanupDraw);
-  holder.onpointerdown = function (e) { beginCleanupDraw(e, holder); };
+  holder.classList.toggle("draw-cleanup", !!drawMode);
+  holder.onpointerdown = function (e) { beginRegionDraw(e, holder); };
   fig.appendChild(holder);
   $("stage").appendChild(fig);
   page.regions.forEach(refreshPreviews);
@@ -602,7 +605,7 @@ function placeBox(b, box) {
 
 function startDrag(e, r, box) {
   e.stopPropagation();
-  if (cleanupDraw) return;
+  if (drawMode) return;
   if (e.button !== 0) return;
   e.preventDefault();
   select(r.id, false);
@@ -635,8 +638,8 @@ function startDrag(e, r, box) {
   };
 }
 
-function beginCleanupDraw(e, holder) {
-  if (!cleanupDraw || e.button !== 0 || e.target.classList.contains("box")) return;
+function beginRegionDraw(e, holder) {
+  if (!drawMode || e.button !== 0 || e.target.classList.contains("box")) return;
   e.preventDefault();
   var rect = holder.getBoundingClientRect();
   var x0 = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
@@ -657,7 +660,7 @@ function beginCleanupDraw(e, holder) {
                Math.round((d.top - rect.top) * page.height / rect.height),
                Math.round(d.width * page.width / rect.width),
                Math.round(d.height * page.height / rect.height)];
-    addCleanup(box);
+    addManualRegion(box, drawMode === "cleanup");
   }
   holder.onpointermove = move; holder.onpointerup = done;
   holder.onpointercancel = function () {
@@ -666,12 +669,14 @@ function beginCleanupDraw(e, holder) {
   move(e);
 }
 
-function addCleanup(box) {
+function addManualRegion(box, cleanup) {
   var id = "manual-" + Date.now().toString(36);
-  var r = {id: id, bbox: box, safe_box: box.slice(), kind: "cleanup", text: "",
+  var r = {id: id, bbox: box, safe_box: box.slice(), kind: cleanup ? "cleanup" : "unknown", text: "",
     translation: "", font_px: 0, line_h_px: 0, conf: 1, fg: [0,0,0],
-    bg: [255,255,255], on_art: true, erase_only: true, translatable: false};
-  page.regions.push(r); dirtyCreates[id] = {id: id, bbox: box.slice()};
+    bg: [255,255,255], on_art: true, erase_only: cleanup,
+    manual_text: !cleanup, translatable: false};
+  page.regions.push(r);
+  dirtyCreates[id] = {id: id, bbox: box.slice(), erase_only: cleanup};
   drawStage(); drawRegions(); select(id, false); markDirty();
 }
 
@@ -778,10 +783,10 @@ function drawRegions() {
     hd.className = "hd";
     hd.innerHTML = "<b></b><span class='tag'></span><span></span>";
     hd.querySelector("b").textContent = r.id;
-    hd.querySelector(".tag").textContent = r.kind;
+    hd.querySelector(".tag").textContent = r.manual_text ? "ручной текст" : r.kind;
     hd.lastChild.textContent = r.font_px + "px · conf " + r.conf.toFixed(2);
     if (r.conf < 0.5) hd.querySelector(".tag").classList.add("low");
-    if (!r.translatable && !r.erase_only) {
+    if (!r.translatable && !r.erase_only && !r.manual_text) {
       var skip = document.createElement("span");
       skip.className = "tag skip";
       skip.textContent = "модель пропускает";
@@ -1675,14 +1680,18 @@ $("preview").onclick = function () {
   });
   if (previewOn) refreshAllPreviews();
 };
-$("add-cleanup").onclick = function () {
-  cleanupDraw = !cleanupDraw;
-  $("add-cleanup").className = cleanupDraw ? "on" : "";
+function setDrawMode(mode) {
+  drawMode = drawMode === mode ? "" : mode;
+  $("add-cleanup").className = drawMode === "cleanup" ? "on" : "";
+  $("add-text").className = drawMode === "text" ? "on" : "";
   [].forEach.call(document.querySelectorAll("#stage .holder"), function (holder) {
-    holder.classList.toggle("draw-cleanup", cleanupDraw);
+    holder.classList.toggle("draw-cleanup", !!drawMode);
   });
-  say(cleanupDraw ? "Протяните прямоугольник по месту, которое нужно очистить." : "");
-};
+  say(drawMode === "cleanup" ? "Протяните прямоугольник по месту, которое нужно очистить." :
+      drawMode === "text" ? "Протяните рамку нового текста, затем заполните его карточку." : "");
+}
+$("add-cleanup").onclick = function () { setDrawMode("cleanup"); };
+$("add-text").onclick = function () { setDrawMode("text"); };
 $("prev").onclick = function () { step(-1); };
 $("next").onclick = function () { step(1); };
 [].forEach.call(document.querySelectorAll("#bar button[data-mode]"), function (b) {
