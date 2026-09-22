@@ -56,13 +56,14 @@ def _region_literal(r: Dict[str, Any]) -> str:
     sx, sy, sw, sh = r.get("safe_box") or [x, y, w, h]
     return (
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
-        "size:%d,lead:%d,kind:%s,onArt:%s,keep:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "size:%d,lead:%d,kind:%s,font:%s,onArt:%s,keep:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
             int(r.get("font_px") or 24),
             int(r.get("line_h_px") or 0),
             esc(r.get("kind") or "unknown"),
+            esc(r.get("font") or ""),
             "true" if r.get("on_art") else "false",
             "true" if r.get("keep_lines") else "false",
             fg[0], fg[1], fg[2],
@@ -229,7 +230,7 @@ def build(src_img: str, psd_out: str, png_out: str, report_out: str,
     parts = [HEADER]
     parts.append("var SRC = %s, PSD = %s, PNG = %s, REPORT = %s, FONT = %s;"
                  % (esc(src_img), esc(psd_out), esc(png_out), esc(report_out), esc(font)))
-    parts.append("var FONT_OK = false, ERASE_ALL = %s, LANG = %s;"
+    parts.append("var FONT_OK = {}, ERASE_ALL = %s, LANG = %s;"
                  % ("true" if erase_only else "false", esc(lang)))
     parts.append("var ERASE_IDS = %s;"
                  % ("null" if erase_ids is None
@@ -252,12 +253,9 @@ step('setup', function () {
 // отчёте будет видно, почему страница пустая.
 step('font', function () {
   for (var i = 0; i < app.fonts.length; i++) {
-    if (app.fonts[i].postScriptName == FONT) {
-      FONT_OK = true;
-      return FONT + ' = ' + app.fonts[i].name;
-    }
+    FONT_OK[app.fonts[i].postScriptName] = app.fonts[i].name;
   }
-  throw new Error('font not installed: ' + FONT);
+  return app.fonts.length + ' installed; default=' + FONT;
 });
 
 // Проход 1: стираем оригинал. Все стирания идут по фоновому слою,
@@ -291,7 +289,6 @@ step('erase_all', function () {
         parts.append("""
 // Проход 2: вёрстка переводов.
 step('typeset_all', function () {
-  if (!FONT_OK) return 'skipped: font not installed';
   var placed = 0, overflow = [], lang = '';
   for (var i = 0; i < REGIONS.length; i++) {
     var r = REGIONS[i];
@@ -303,7 +300,9 @@ step('typeset_all', function () {
       var ti = tl.textItem;
       ti.kind = TextType.PARAGRAPHTEXT;
       ti.contents = r.txt;
-      ti.font = FONT;
+      var chosenFont = r.font || FONT;
+      if (!FONT_OK[chosenFont]) throw new Error('font not installed: ' + chosenFont);
+      ti.font = chosenFont;
       // Реплика центруется, список — нет: у содержания и титров левый край
       // ровный, и переносить его в центр значит разъехаться с линейками.
       ti.justification = r.keep ? Justification.LEFT : Justification.CENTER;

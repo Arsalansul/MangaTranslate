@@ -81,7 +81,9 @@
     "Microsoft YaHei", "Yu Gothic UI", monospace; }
   .reg textarea { width: 100%; min-height: 40px; resize: vertical; font: inherit;
     padding: 4px 5px; border: 1px solid var(--line); border-radius: 3px; }
-  .reg.dirty textarea { border-color: var(--warn); background: #fffdf3; }
+  .reg .font { width: 100%; margin-top: 5px; padding: 3px 5px; font: inherit;
+    border: 1px solid var(--line); border-radius: 3px; background: #fff; color: var(--ink); }
+  .reg.dirty textarea, .reg.dirty .font { border-color: var(--warn); background: #fffdf3; }
   .tag { border: 1px solid var(--line); border-radius: 8px; padding: 0 5px;
     background: #fff; }
   .tag.skip { color: var(--warn); border-color: #ddcf9a; background: #fdf8e8; }
@@ -405,6 +407,7 @@ var pages = [];       // карточки страниц
 var page = null;      // открытая страница целиком
 var dirty = {};       // id -> новый перевод, ещё не записанный на диск
 var dirtyPos = {};    // id -> вручную передвинутый safe_box
+var dirtyFonts = {};  // id -> PostScript-имя шрифта (пустое = общий)
 var sel = null;       // выделенный регион
 var mode = "both";
 var tab = "view";
@@ -487,7 +490,7 @@ function rowOf(stem) {
 function openPage(stem) {
   if (!confirmDrop()) return;
   api("/api/page?stem=" + encodeURIComponent(stem)).then(function (data) {
-    page = data; dirty = {}; dirtyPos = {}; sel = null;
+    page = data; dirty = {}; dirtyPos = {}; dirtyFonts = {}; sel = null;
     var row = rowOf(stem);
     if (row) { row.regions = data.regions.length; row.translated = data.translated;
                row.out = data.out; }
@@ -577,6 +580,9 @@ function startDrag(e, r, box) {
     var next = [x, y, start[2], start[3]];
     if (sameBox(next, r.safe_box || r.bbox)) delete dirtyPos[r.id];
     else dirtyPos[r.id] = next;
+    var card = document.querySelector(".reg[data-id='" + r.id + "']");
+    if (card) card.classList.toggle("dirty", dirty.hasOwnProperty(r.id) ||
+      dirtyFonts.hasOwnProperty(r.id) || dirtyPos.hasOwnProperty(r.id));
     [].forEach.call(document.querySelectorAll(".box[data-id='" + r.id + "']"), function (b) {
       placeBox(b, next);
     });
@@ -644,21 +650,47 @@ function drawRegions() {
     ta.onfocus = function () { select(r.id, false); };
     el.appendChild(ta);
 
+    var font = document.createElement("select");
+    font.className = "font";
+    addOption(font, "", "Общий шрифт — " + ((info && info.font) || "по умолчанию"));
+    ((info && info.fonts) || []).forEach(function (name) { addOption(font, name, name); });
+    if (r.font && ![].some.call(font.options, function (o) { return o.value === r.font; })) {
+      addOption(font, r.font, r.font + " — нет в fonts/");
+    }
+    font.value = r.font || "";
+    font.onchange = function () {
+      if (font.value === (r.font || "")) delete dirtyFonts[r.id];
+      else dirtyFonts[r.id] = font.value;
+      el.classList.toggle("dirty", dirty.hasOwnProperty(r.id) ||
+        dirtyFonts.hasOwnProperty(r.id) || dirtyPos.hasOwnProperty(r.id));
+      markDirty();
+    };
+    font.onfocus = function () { select(r.id, false); };
+    el.appendChild(font);
+
     box.appendChild(el);
   });
   markDirty();
 }
 
+function addOption(select, value, label) {
+  var option = document.createElement("option");
+  option.value = value; option.textContent = label; select.appendChild(option);
+}
+
 function edit(r, value, el) {
   if (value === r.translation) delete dirty[r.id];
   else dirty[r.id] = value;
-  el.classList.toggle("dirty", dirty.hasOwnProperty(r.id));
+  el.classList.toggle("dirty", dirty.hasOwnProperty(r.id) ||
+    dirtyFonts.hasOwnProperty(r.id) || dirtyPos.hasOwnProperty(r.id));
   markDirty();
 }
 
 function markDirty() {
   var ids = {};
-  Object.keys(dirty).concat(Object.keys(dirtyPos)).forEach(function (id) { ids[id] = true; });
+  Object.keys(dirty).concat(Object.keys(dirtyPos), Object.keys(dirtyFonts)).forEach(function (id) {
+    ids[id] = true;
+  });
   var n = Object.keys(ids).length;
   var busy = !!(job && job.state === "running");
   $("save").disabled = !n || busy;
@@ -692,9 +724,11 @@ function drawFoot() {
 // --- сохранение -----------------------------------------------------
 
 function save() {
-  if (!page || (!Object.keys(dirty).length && !Object.keys(dirtyPos).length)) return;
-  api("/api/page", {stem: page.stem, edits: dirty, positions: dirtyPos}).then(function (data) {
-    page = data; dirty = {}; dirtyPos = {};
+  if (!page || (!Object.keys(dirty).length && !Object.keys(dirtyPos).length &&
+                !Object.keys(dirtyFonts).length)) return;
+  api("/api/page", {stem: page.stem, edits: dirty, positions: dirtyPos,
+                     fonts: dirtyFonts}).then(function (data) {
+    page = data; dirty = {}; dirtyPos = {}; dirtyFonts = {};
     var row = rowOf(data.stem);
     if (row) { row.regions = data.regions.length; row.translated = data.translated; }
     // Перерисовываем и сцену: обработчики drag замыкаются на координаты
@@ -707,7 +741,8 @@ function save() {
 }
 
 function confirmDrop() {
-  return (!Object.keys(dirty).length && !Object.keys(dirtyPos).length) ||
+  return (!Object.keys(dirty).length && !Object.keys(dirtyPos).length &&
+          !Object.keys(dirtyFonts).length) ||
     confirm("Есть несохранённые правки. Уйти со страницы и потерять их?");
 }
 
@@ -1379,7 +1414,8 @@ document.onkeydown = function (e) {
   }
 };
 window.onbeforeunload = function (e) {
-  if (Object.keys(dirty).length) { e.preventDefault(); return ""; }
+  if (Object.keys(dirty).length || Object.keys(dirtyPos).length ||
+      Object.keys(dirtyFonts).length) { e.preventDefault(); return ""; }
 };
 
 // Проект помнит настройки серии: если он открыт, форма запуска должна

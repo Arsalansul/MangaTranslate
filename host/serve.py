@@ -282,7 +282,7 @@ def _chapter():
     return {"chapter": STATE["chapter"], "out": STATE["out_dir"],
             "font": STATE["font"], "engine": STATE["engine"],
             "lang": STATE["lang"], "target_lang": STATE["target_lang"],
-            "pages": STATE["pages"]}
+            "fonts": _font_names(), "pages": STATE["pages"]}
 
 
 def _row(stem):
@@ -308,6 +308,7 @@ def _brief(r):
         "kind": r.get("kind") or "unknown",
         "text": r.get("text") or "",
         "translation": r.get("translation") or "",
+        "font": r.get("font") or "",
         "font_px": int(r.get("font_px") or 0),
         "conf": round(float(r.get("conf") or 0.0), 2),
         # Правило «что вообще переводится» живёт в translate.py в одном
@@ -372,6 +373,9 @@ def api_save(body):
     positions = body.get("positions", {})
     if not isinstance(positions, dict):
         raise ApiError(400, "positions должен быть объектом {id: [x, y, w, h]}")
+    fonts = body.get("fonts", {})
+    if not isinstance(fonts, dict):
+        raise ApiError(400, "fonts должен быть объектом {id: шрифт}")
 
     path, analysis = _read(stem)
     by_id = {r.get("id"): r for r in analysis.get("regions", [])}
@@ -406,6 +410,23 @@ def api_save(body):
         x = max(0, min(x, int(analysis.get("width") or (x + w)) - w))
         y = max(0, min(y, int(analysis.get("height") or (y + h)) - h))
         region["safe_box"] = [x, y, w, h]
+        if rid not in saved:
+            saved.append(rid)
+    available = set(_font_names())
+    for rid, font in fonts.items():
+        region = by_id.get(rid)
+        if region is None:
+            if rid not in unknown:
+                unknown.append(rid)
+            continue
+        if not isinstance(font, str):
+            raise ApiError(400, "Шрифт должен быть строкой: " + str(rid))
+        if font and font not in available:
+            raise ApiError(400, "Нет такого доступного шрифта: " + font)
+        if font:
+            region["font"] = font
+        else:
+            region.pop("font", None)
         if rid not in saved:
             saved.append(rid)
     if saved:
@@ -468,6 +489,15 @@ def _fonts():
                      for t in translate.TARGETS},
         })
     return out
+
+
+def _font_names():
+    """PostScript-имена для списков выбора, включая шрифт старого отчёта."""
+    names = [f["ps"] for f in _fonts() if f.get("ps")]
+    current = STATE.get("font") or bridge.DEFAULT_FONT
+    if current and current not in names:
+        names.insert(0, current)
+    return names
 
 
 def _providers():
