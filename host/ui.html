@@ -70,7 +70,10 @@
   .preview-text { position: absolute; inset: 0; display: flex; align-items: center;
     overflow: hidden; pointer-events: none; padding: 0; line-height: 1.18;
     white-space: pre-wrap; overflow-wrap: anywhere; text-shadow: 0 0 1px rgba(255,255,255,.35); }
-  .preview-text > span { display: block; width: 100%; }
+  .preview-stack { display: grid; width: 100%; }
+  .preview-stack > span { display: block; width: 100%; grid-area: 1 / 1; }
+  .preview-outline { color: transparent; z-index: 0; }
+  .preview-fill { z-index: 1; }
   .holder.no-preview .preview-text { display: none; }
 
   #side { width: 400px; display: flex; flex-direction: column;
@@ -594,7 +597,10 @@ function side(kind, name, caption) {
     b.title = r.id + ": " + r.text;
     var preview = document.createElement("div");
     preview.className = "preview-text";
-    preview.appendChild(document.createElement("span"));
+    var stack = document.createElement("div"); stack.className = "preview-stack";
+    var outline = document.createElement("span"); outline.className = "preview-outline";
+    var fill = document.createElement("span"); fill.className = "preview-fill";
+    stack.appendChild(outline); stack.appendChild(fill); preview.appendChild(stack);
     b.appendChild(preview);
     b.onclick = function () { if (!b._dragged) select(r.id, true); b._dragged = false; };
     b.onpointerdown = function (e) { startDrag(e, r, b); };
@@ -723,10 +729,12 @@ function effectiveStyle(r) {
 
 function refreshPreviews(r) {
   [].forEach.call(document.querySelectorAll(".box[data-id='" + r.id + "']"), function (box) {
-    var preview = box.querySelector(".preview-text"), span = preview && preview.firstChild;
-    if (!preview || !span) return;
+    var preview = box.querySelector(".preview-text");
+    var span = preview && preview.querySelector(".preview-fill");
+    var outline = preview && preview.querySelector(".preview-outline");
+    if (!preview || !span || !outline) return;
     var text = effectiveText(r) || "", style = effectiveStyle(r);
-    span.textContent = text;
+    span.textContent = outline.textContent = text;
     var baseColor = rgbHex(style.color || r.fg || [0, 0, 0]);
     preview.style.color = baseColor;
     preview.style.background = r.on_art ? "rgba(255,255,255,.18)" :
@@ -737,11 +745,12 @@ function refreshPreviews(r) {
     preview.style.textAlign = style.align || (r.keep_lines ? "left" : "center");
     preview.style.justifyContent = preview.style.textAlign === "right" ? "flex-end" :
       (preview.style.textAlign === "left" ? "flex-start" : "center");
-    span.style.fontWeight = style.bold ? "bold" : "normal";
-    span.style.fontStyle = style.italic ? "italic" : "normal";
+    preview.style.fontWeight = style.bold ? "bold" : "normal";
+    preview.style.fontStyle = style.italic ? "italic" : "normal";
     span.style.textDecoration = style.underline ? "underline" : "none";
     var scale = box.parentNode.clientWidth / page.width;
-    span.style.webkitTextStroke = "0 transparent";
+    outline.style.webkitTextStroke = style.stroke ?
+      ((style.stroke.size * 2 * scale) + "px " + rgbHex(style.stroke.color)) : "0 transparent";
     if (style.gradient) {
       span.style.backgroundImage = style.gradient.type === "radial"
         ? ("radial-gradient(" + rgbHex(style.gradient.color1) + "," +
@@ -754,21 +763,11 @@ function refreshPreviews(r) {
       span.style.backgroundImage = "none"; span.style.webkitBackgroundClip = "border-box";
       span.style.backgroundClip = "border-box"; span.style.color = "inherit";
     }
-    var shadows = [];
-    if (style.stroke) {
-      var radius = style.stroke.size * scale, strokeColor = rgbHex(style.stroke.color);
-      for (var ring = Math.max(.5, radius / 2); ring <= radius + .01; ring += Math.max(.5, radius / 2)) {
-        for (var ai = 0; ai < 16; ai++) {
-          var a = Math.PI * 2 * ai / 16;
-          shadows.push((Math.cos(a) * ring).toFixed(2) + "px " +
-            (Math.sin(a) * ring).toFixed(2) + "px 0 " + strokeColor);
-        }
-      }
-    }
-    if (style.shadow) shadows.push((style.shadow.x * scale) + "px " +
+    var shadow = style.shadow ? ((style.shadow.x * scale) + "px " +
       (style.shadow.y * scale) + "px " + (style.shadow.blur * scale) + "px rgba(" +
-      style.shadow.color.join(",") + "," + (style.shadow.opacity / 100) + ")");
-    span.style.textShadow = shadows.length ? shadows.join(",") : "none";
+      style.shadow.color.join(",") + "," + (style.shadow.opacity / 100) + ")") : "none";
+    outline.style.textShadow = style.stroke ? shadow : "none";
+    span.style.textShadow = style.stroke ? "none" : shadow;
     fitPreview(preview, style.size, style.leading, r.font_px);
   });
 }
