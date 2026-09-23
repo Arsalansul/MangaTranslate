@@ -53,6 +53,11 @@ def _region_literal(r: Dict[str, Any]) -> str:
     fg = r.get("fg") or [0, 0, 0]
     color = r.get("typeset_color") or fg
     bg = r.get("bg") or [255, 255, 255]
+    effects = r.get("typeset_effects")
+    if effects is None:
+        legacy = {"stroke": r.get("typeset_stroke"), "gradient": r.get("typeset_gradient"),
+                  "shadow": r.get("typeset_shadow")}
+        effects = [legacy] if any(legacy.values()) else []
     # Стираем по bbox/полигону, а верстаем по safe_box: стереть надо ровно
     # бывший текст, а поставить — с запасом, который даёт балун.
     sx, sy, sw, sh = r.get("safe_box") or [x, y, w, h]
@@ -60,7 +65,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
         "size:%d,lead:%d,fixedSize:%d,fixedLead:%d,kind:%s,font:%s,align:%s,"
         "onArt:%s,keep:%s,forceErase:%s,bold:%s,italic:%s,underline:%s,"
-        "stroke:%s,gradient:%s,shadow:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "effects:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
@@ -77,9 +82,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
             "true" if r.get("typeset_bold") else "false",
             "true" if r.get("typeset_italic") else "false",
             "true" if r.get("typeset_underline") else "false",
-            json.dumps(r.get("typeset_stroke"), separators=(",", ":")),
-            json.dumps(r.get("typeset_gradient"), separators=(",", ":")),
-            json.dumps(r.get("typeset_shadow"), separators=(",", ":")),
+            json.dumps(effects, separators=(",", ":")),
             color[0], color[1], color[2],
             bg[0], bg[1], bg[2],
         )
@@ -210,10 +213,16 @@ function gradientObject(g) {
 }
 
 function applyLayerEffects(r) {
-  if (!r.stroke && !r.gradient && !r.shadow) return;
+  var groups = r.effects || [], strokes = [], gradients = [], shadows = [];
+  for (var gi = 0; gi < groups.length; gi++) {
+    if (groups[gi].stroke) strokes.push(groups[gi].stroke);
+    if (groups[gi].gradient) gradients.push(groups[gi].gradient);
+    if (groups[gi].shadow) shadows.push(groups[gi].shadow);
+  }
+  if (!strokes.length && !gradients.length && !shadows.length) return;
   var fx = new ActionDescriptor();
   fx.putUnitDouble(stringIDToTypeID('scale'), stringIDToTypeID('percentUnit'), 100);
-  if (r.stroke) {
+  function strokeDesc(value) {
     var st = new ActionDescriptor();
     st.putBoolean(stringIDToTypeID('enabled'), true);
     st.putBoolean(stringIDToTypeID('present'), true);
@@ -225,11 +234,11 @@ function applyLayerEffects(r) {
     st.putEnumerated(stringIDToTypeID('mode'), stringIDToTypeID('blendMode'),
                      stringIDToTypeID('normal'));
     st.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), 100);
-    st.putUnitDouble(stringIDToTypeID('size'), stringIDToTypeID('pixelsUnit'), r.stroke.size);
-    st.putObject(stringIDToTypeID('color'), stringIDToTypeID('RGBColor'), rgbObject(r.stroke.color));
-    fx.putObject(stringIDToTypeID('frameFX'), stringIDToTypeID('frameFX'), st);
+    st.putUnitDouble(stringIDToTypeID('size'), stringIDToTypeID('pixelsUnit'), value.size);
+    st.putObject(stringIDToTypeID('color'), stringIDToTypeID('RGBColor'), rgbObject(value.color));
+    return st;
   }
-  if (r.gradient) {
+  function gradientDesc(value) {
     var gr = new ActionDescriptor();
     gr.putBoolean(stringIDToTypeID('enabled'), true);
     gr.putBoolean(stringIDToTypeID('present'), true);
@@ -237,33 +246,45 @@ function applyLayerEffects(r) {
     gr.putEnumerated(stringIDToTypeID('mode'), stringIDToTypeID('blendMode'), stringIDToTypeID('normal'));
     gr.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), 100);
     gr.putObject(stringIDToTypeID('gradient'), stringIDToTypeID('gradientClassEvent'),
-                 gradientObject(r.gradient));
-    gr.putUnitDouble(stringIDToTypeID('angle'), stringIDToTypeID('angleUnit'), r.gradient.angle);
+                 gradientObject(value));
+    gr.putUnitDouble(stringIDToTypeID('angle'), stringIDToTypeID('angleUnit'), value.angle);
     gr.putEnumerated(stringIDToTypeID('type'), stringIDToTypeID('gradientType'),
-                     stringIDToTypeID(r.gradient.type));
+                     stringIDToTypeID(value.type));
     gr.putBoolean(stringIDToTypeID('reverse'), false);
     gr.putBoolean(stringIDToTypeID('dither'), true);
     gr.putBoolean(stringIDToTypeID('align'), true);
     gr.putUnitDouble(stringIDToTypeID('scale'), stringIDToTypeID('percentUnit'), 100);
-    fx.putObject(stringIDToTypeID('gradientFill'), stringIDToTypeID('gradientFill'), gr);
+    return gr;
   }
-  if (r.shadow) {
+  function shadowDesc(value) {
     var sh = new ActionDescriptor();
     sh.putBoolean(stringIDToTypeID('enabled'), true);
     sh.putBoolean(stringIDToTypeID('present'), true);
     sh.putBoolean(stringIDToTypeID('showInDialog'), true);
     sh.putEnumerated(stringIDToTypeID('mode'), stringIDToTypeID('blendMode'), stringIDToTypeID('multiply'));
-    sh.putObject(stringIDToTypeID('color'), stringIDToTypeID('RGBColor'), rgbObject(r.shadow.color));
-    sh.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), r.shadow.opacity);
+    sh.putObject(stringIDToTypeID('color'), stringIDToTypeID('RGBColor'), rgbObject(value.color));
+    sh.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), value.opacity);
     sh.putBoolean(stringIDToTypeID('useGlobalAngle'), false);
-    var angle = Math.atan2(r.shadow.y, r.shadow.x) * 180 / Math.PI;
-    var distance = Math.sqrt(r.shadow.x * r.shadow.x + r.shadow.y * r.shadow.y);
+    var angle = Math.atan2(value.y, value.x) * 180 / Math.PI;
+    var distance = Math.sqrt(value.x * value.x + value.y * value.y);
     sh.putUnitDouble(stringIDToTypeID('localLightingAngle'), stringIDToTypeID('angleUnit'), angle);
     sh.putUnitDouble(stringIDToTypeID('distance'), stringIDToTypeID('pixelsUnit'), distance);
     sh.putUnitDouble(stringIDToTypeID('chokeMatte'), stringIDToTypeID('pixelsUnit'), 0);
-    sh.putUnitDouble(stringIDToTypeID('blur'), stringIDToTypeID('pixelsUnit'), r.shadow.blur);
-    fx.putObject(stringIDToTypeID('dropShadow'), stringIDToTypeID('dropShadow'), sh);
+    sh.putUnitDouble(stringIDToTypeID('blur'), stringIDToTypeID('pixelsUnit'), value.blur);
+    return sh;
   }
+  function putMany(singleKey, multiKey, classKey, values, factory) {
+    if (!values.length) return;
+    if (values.length == 1) fx.putObject(stringIDToTypeID(singleKey), stringIDToTypeID(classKey), factory(values[0]));
+    else {
+      var list = new ActionList();
+      for (var i = 0; i < values.length; i++) list.putObject(stringIDToTypeID(classKey), factory(values[i]));
+      fx.putList(stringIDToTypeID(multiKey), list);
+    }
+  }
+  putMany('frameFX', 'frameFXMulti', 'frameFX', strokes, strokeDesc);
+  putMany('gradientFill', 'gradientFillMulti', 'gradientFill', gradients, gradientDesc);
+  putMany('dropShadow', 'dropShadowMulti', 'dropShadow', shadows, shadowDesc);
   var set = new ActionDescriptor(), ref = new ActionReference();
   ref.putProperty(stringIDToTypeID('property'), stringIDToTypeID('layerEffects'));
   ref.putEnumerated(stringIDToTypeID('layer'), stringIDToTypeID('ordinal'),

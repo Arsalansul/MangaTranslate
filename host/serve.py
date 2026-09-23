@@ -324,9 +324,10 @@ def _brief(r):
         "typeset_bold": bool(r.get("typeset_bold")),
         "typeset_italic": bool(r.get("typeset_italic")),
         "typeset_underline": bool(r.get("typeset_underline")),
-        "typeset_stroke": r.get("typeset_stroke"),
-        "typeset_gradient": r.get("typeset_gradient"),
-        "typeset_shadow": r.get("typeset_shadow"),
+        "typeset_effects": r.get("typeset_effects") or ([{
+            "stroke": r.get("typeset_stroke"), "gradient": r.get("typeset_gradient"),
+            "shadow": r.get("typeset_shadow")
+        }] if r.get("typeset_stroke") or r.get("typeset_gradient") or r.get("typeset_shadow") else []),
         "conf": round(float(r.get("conf") or 0.0), 2),
         # Правило «что вообще переводится» живёт в translate.py в одном
         # экземпляре; повторять его в JavaScript нельзя — разъедется.
@@ -493,8 +494,7 @@ def api_save(body):
         align, color = style.get("align"), style.get("color")
         bold, italic = style.get("bold", False), style.get("italic", False)
         underline = style.get("underline", False)
-        stroke, gradient, shadow = (style.get("stroke"), style.get("gradient"),
-                                    style.get("shadow"))
+        effects = style.get("effects", [])
         for field, value in (("size", size), ("leading", leading)):
             if value is not None and (isinstance(value, bool) or
                                       not isinstance(value, (int, float)) or value <= 0 or value > 1000):
@@ -513,25 +513,38 @@ def api_save(body):
                         v < 0 or v > 255 for v in value)):
                 raise ApiError(400, "%s должен быть RGB [0..255]: %s" % (field, rid))
             return [int(round(v)) for v in value]
-        if stroke is not None:
-            if (not isinstance(stroke, dict) or not isinstance(stroke.get("size"), (int, float)) or
-                    isinstance(stroke.get("size"), bool) or stroke["size"] <= 0 or stroke["size"] > 100):
-                raise ApiError(400, "Некорректная обводка: " + str(rid))
-            stroke = {"size": int(round(stroke["size"])), "color": rgb(stroke.get("color"), "Цвет обводки")}
-        if gradient is not None:
-            if (not isinstance(gradient, dict) or gradient.get("type") not in ("linear", "radial") or
-                    not isinstance(gradient.get("angle", 0), (int, float))):
-                raise ApiError(400, "Некорректный градиент: " + str(rid))
-            gradient = {"type": gradient["type"], "color1": rgb(gradient.get("color1"), "Цвет градиента"),
-                        "color2": rgb(gradient.get("color2"), "Цвет градиента"),
-                        "angle": float(gradient.get("angle", 0)) % 360}
-        if shadow is not None:
-            nums = [shadow.get(k) for k in ("opacity", "x", "y", "blur")] if isinstance(shadow, dict) else []
-            if (len(nums) != 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in nums) or
-                    not 0 <= nums[0] <= 100 or not 0 <= nums[3] <= 200):
-                raise ApiError(400, "Некорректная тень: " + str(rid))
-            shadow = {"color": rgb(shadow.get("color"), "Цвет тени"), "opacity": float(nums[0]),
-                      "x": float(nums[1]), "y": float(nums[2]), "blur": float(nums[3])}
+        if not isinstance(effects, list) or len(effects) > 8:
+            raise ApiError(400, "Эффекты должны быть массивом максимум из 8 блоков: " + str(rid))
+        clean_effects = []
+        for effect in effects:
+            if not isinstance(effect, dict):
+                raise ApiError(400, "Блок эффектов должен быть объектом: " + str(rid))
+            stroke, gradient, shadow = effect.get("stroke"), effect.get("gradient"), effect.get("shadow")
+            clean = {"stroke": None, "gradient": None, "shadow": None}
+            if stroke is not None:
+                if (not isinstance(stroke, dict) or not isinstance(stroke.get("size"), (int, float)) or
+                        isinstance(stroke.get("size"), bool) or stroke["size"] <= 0 or stroke["size"] > 100):
+                    raise ApiError(400, "Некорректная обводка: " + str(rid))
+                clean["stroke"] = {"size": int(round(stroke["size"])),
+                                   "color": rgb(stroke.get("color"), "Цвет обводки")}
+            if gradient is not None:
+                if (not isinstance(gradient, dict) or gradient.get("type") not in ("linear", "radial") or
+                        not isinstance(gradient.get("angle", 0), (int, float))):
+                    raise ApiError(400, "Некорректный градиент: " + str(rid))
+                clean["gradient"] = {"type": gradient["type"],
+                    "color1": rgb(gradient.get("color1"), "Цвет градиента"),
+                    "color2": rgb(gradient.get("color2"), "Цвет градиента"),
+                    "angle": float(gradient.get("angle", 0)) % 360}
+            if shadow is not None:
+                nums = [shadow.get(k) for k in ("opacity", "x", "y", "blur")] if isinstance(shadow, dict) else []
+                if (len(nums) != 4 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in nums) or
+                        not 0 <= nums[0] <= 100 or not 0 <= nums[3] <= 200):
+                    raise ApiError(400, "Некорректная тень: " + str(rid))
+                clean["shadow"] = {"color": rgb(shadow.get("color"), "Цвет тени"),
+                    "opacity": float(nums[0]), "x": float(nums[1]), "y": float(nums[2]),
+                    "blur": float(nums[3])}
+            if clean["stroke"] or clean["gradient"] or clean["shadow"]:
+                clean_effects.append(clean)
         values = {
             "typeset_size": int(round(size)) if size is not None else None,
             "typeset_leading": int(round(leading)) if leading is not None else None,
@@ -540,9 +553,8 @@ def api_save(body):
             "typeset_bold": True if bold else None,
             "typeset_italic": True if italic else None,
             "typeset_underline": True if underline else None,
-            "typeset_stroke": stroke,
-            "typeset_gradient": gradient,
-            "typeset_shadow": shadow,
+            "typeset_effects": clean_effects or None,
+            "typeset_stroke": None, "typeset_gradient": None, "typeset_shadow": None,
         }
         for key, value in values.items():
             if value is None:

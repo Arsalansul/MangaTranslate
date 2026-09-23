@@ -112,12 +112,16 @@
   .style-toggles input { display: inline; width: auto; margin: 0 3px 0 0; }
   .effects { border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px; }
   .effects summary { cursor: pointer; color: var(--dim); }
+  .effect-block { border-top: 1px solid #e7e7e2; margin-top: 6px; padding-top: 5px; }
+  .effect-head { display: flex; align-items: center; color: var(--dim); font-size: 11px; }
+  .effect-head button { margin-left: auto; padding: 0 5px; color: var(--bad); }
   .effects-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
     gap: 5px; margin-top: 6px; }
   .effects-grid [hidden] { display: none; }
   .check-field { display: flex; align-items: center; gap: 4px; align-self: end; min-height: 27px; }
   .editor .check-field input { display: inline; width: auto; margin: 0; }
   .gradient-colors { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .add-effect { width: 100%; margin-top: 6px; }
   .reg .font[hidden], .reg .editor[hidden] { display: none; }
   .reg.dirty textarea, .reg.dirty .font { border-color: var(--warn); background: #fffdf3; }
   .tag { border: 1px solid var(--line); border-radius: 8px; padding: 0 5px;
@@ -598,9 +602,8 @@ function side(kind, name, caption) {
     var preview = document.createElement("div");
     preview.className = "preview-text";
     var stack = document.createElement("div"); stack.className = "preview-stack";
-    var outline = document.createElement("span"); outline.className = "preview-outline";
     var fill = document.createElement("span"); fill.className = "preview-fill";
-    stack.appendChild(outline); stack.appendChild(fill); preview.appendChild(stack);
+    stack.appendChild(fill); preview.appendChild(stack);
     b.appendChild(preview);
     b.onclick = function () { if (!b._dragged) select(r.id, true); b._dragged = false; };
     b.onpointerdown = function (e) { startDrag(e, r, b); };
@@ -731,10 +734,9 @@ function refreshPreviews(r) {
   [].forEach.call(document.querySelectorAll(".box[data-id='" + r.id + "']"), function (box) {
     var preview = box.querySelector(".preview-text");
     var span = preview && preview.querySelector(".preview-fill");
-    var outline = preview && preview.querySelector(".preview-outline");
-    if (!preview || !span || !outline) return;
+    if (!preview || !span) return;
     var text = effectiveText(r) || "", style = effectiveStyle(r);
-    span.textContent = outline.textContent = text;
+    span.textContent = text;
     var baseColor = rgbHex(style.color || r.fg || [0, 0, 0]);
     preview.style.color = baseColor;
     preview.style.background = r.on_art ? "rgba(255,255,255,.18)" :
@@ -749,25 +751,36 @@ function refreshPreviews(r) {
     preview.style.fontStyle = style.italic ? "italic" : "normal";
     span.style.textDecoration = style.underline ? "underline" : "none";
     var scale = box.parentNode.clientWidth / page.width;
-    outline.style.webkitTextStroke = style.stroke ?
-      ((style.stroke.size * 2 * scale) + "px " + rgbHex(style.stroke.color)) : "0 transparent";
-    if (style.gradient) {
-      span.style.backgroundImage = style.gradient.type === "radial"
-        ? ("radial-gradient(" + rgbHex(style.gradient.color1) + "," +
-           rgbHex(style.gradient.color2) + ")")
-        : ("linear-gradient(" + style.gradient.angle + "deg," +
-           rgbHex(style.gradient.color1) + "," + rgbHex(style.gradient.color2) + ")");
+    var groups = style.effects || [], stack = span.parentNode;
+    var outlines = [].slice.call(stack.querySelectorAll(".preview-outline"));
+    while (outlines.length < groups.length) {
+      var extra = document.createElement("span"); extra.className = "preview-outline";
+      stack.insertBefore(extra, span); outlines.push(extra);
+    }
+    while (outlines.length > groups.length) outlines.pop().remove();
+    groups.forEach(function (fx, i) {
+      var outline = outlines[i]; outline.textContent = text; outline.style.zIndex = String(i);
+      outline.style.webkitTextStroke = fx.stroke ?
+        ((fx.stroke.size * 2 * scale) + "px " + rgbHex(fx.stroke.color)) : "0 transparent";
+      outline.style.textShadow = fx.shadow ? ((fx.shadow.x * scale) + "px " +
+        (fx.shadow.y * scale) + "px " + (fx.shadow.blur * scale) + "px rgba(" +
+        fx.shadow.color.join(",") + "," + (fx.shadow.opacity / 100) + ")") : "none";
+    });
+    span.style.zIndex = String(groups.length + 1);
+    var gradient = null;
+    groups.forEach(function (fx) { if (fx.gradient) gradient = fx.gradient; });
+    if (gradient) {
+      span.style.backgroundImage = gradient.type === "radial"
+        ? ("radial-gradient(" + rgbHex(gradient.color1) + "," + rgbHex(gradient.color2) + ")")
+        : ("linear-gradient(" + gradient.angle + "deg," +
+           rgbHex(gradient.color1) + "," + rgbHex(gradient.color2) + ")");
       span.style.webkitBackgroundClip = "text"; span.style.backgroundClip = "text";
       span.style.color = "transparent";
     } else {
       span.style.backgroundImage = "none"; span.style.webkitBackgroundClip = "border-box";
       span.style.backgroundClip = "border-box"; span.style.color = "inherit";
     }
-    var shadow = style.shadow ? ((style.shadow.x * scale) + "px " +
-      (style.shadow.y * scale) + "px " + (style.shadow.blur * scale) + "px rgba(" +
-      style.shadow.color.join(",") + "," + (style.shadow.opacity / 100) + ")") : "none";
-    outline.style.textShadow = style.stroke ? shadow : "none";
-    span.style.textShadow = style.stroke ? "none" : shadow;
+    span.style.textShadow = "none";
     fitPreview(preview, style.size, style.leading, r.font_px);
   });
 }
@@ -909,47 +922,83 @@ function drawRegions() {
     var effects = document.createElement("details"); effects.className = "effects wide";
     var summary = document.createElement("summary"); summary.textContent = "Обводка, градиент и тень";
     effects.appendChild(summary);
-    var effectsGrid = document.createElement("div"); effectsGrid.className = "effects-grid";
-    effects.appendChild(effectsGrid); editor.appendChild(effects);
-    var strokeSize = rangeNumberField(effectsGrid, "Обводка, px",
-      currentStyle.stroke ? currentStyle.stroke.size : "", 0, 100, 1);
-    var strokeColor = colorField(effectsGrid, "Цвет обводки",
-      currentStyle.stroke ? currentStyle.stroke.color : [255, 255, 255]);
-    var gradientType = selectField(effectsGrid, "Градиент", [
-      ["", "нет"], ["linear", "линейный"], ["radial", "радиальный"]
-    ], currentStyle.gradient ? currentStyle.gradient.type : "");
-    var gradientColors = document.createElement("div"); gradientColors.className = "gradient-colors";
-    effectsGrid.appendChild(gradientColors);
-    var gradientColor1 = colorField(gradientColors, "Цвет 1",
-      currentStyle.gradient ? currentStyle.gradient.color1 : [255, 255, 255]);
-    var gradientColor2 = colorField(gradientColors, "Цвет 2",
-      currentStyle.gradient ? currentStyle.gradient.color2 : [0, 0, 0]);
-    var gradientAngle = rangeNumberField(effectsGrid, "Угол",
-      currentStyle.gradient ? currentStyle.gradient.angle : 90, 0, 359, 1);
-    var shadowOn = checkField(effectsGrid, "Тень", !!currentStyle.shadow);
-    var shadowColor = colorField(effectsGrid, "Цвет тени",
-      currentStyle.shadow ? currentStyle.shadow.color : [0, 0, 0]);
-    var shadowOpacity = rangeNumberField(effectsGrid, "Непрозрачность, %",
-      currentStyle.shadow ? currentStyle.shadow.opacity : 60, 0, 100, 1);
-    var shadowX = rangeNumberField(effectsGrid, "Смещение X",
-      currentStyle.shadow ? currentStyle.shadow.x : 2, -200, 200, 1);
-    var shadowY = rangeNumberField(effectsGrid, "Смещение Y",
-      currentStyle.shadow ? currentStyle.shadow.y : 2, -200, 200, 1);
-    var shadowBlur = rangeNumberField(effectsGrid, "Размытие",
-      currentStyle.shadow ? currentStyle.shadow.blur : 3, 0, 200, 1);
-    function updateGradientVisibility() {
-      gradientColors.hidden = gradientType.value !== "linear";
-      gradientAngle.parentNode.hidden = gradientType.value !== "radial";
+    var effectsList = document.createElement("div"); effects.appendChild(effectsList);
+    var addEffect = document.createElement("button"); addEffect.type = "button";
+    addEffect.className = "add-effect"; addEffect.textContent = "+ ещё один блок эффектов";
+    effects.appendChild(addEffect); editor.appendChild(effects);
+    var effectEditors = [];
+    function addEffectBlock(initial) {
+      initial = initial || {};
+      var block = document.createElement("div"); block.className = "effect-block";
+      var head = document.createElement("div"); head.className = "effect-head";
+      var title = document.createElement("span"); head.appendChild(title);
+      var remove = document.createElement("button"); remove.type = "button"; remove.textContent = "удалить";
+      head.appendChild(remove); block.appendChild(head);
+      var grid = document.createElement("div"); grid.className = "effects-grid"; block.appendChild(grid);
+      effectsList.appendChild(block);
+      var strokeSize = rangeNumberField(grid, "Обводка, px",
+        initial.stroke ? initial.stroke.size : "", 0, 100, 1);
+      var strokeColor = colorField(grid, "Цвет обводки",
+        initial.stroke ? initial.stroke.color : [255,255,255]);
+      var gradientType = selectField(grid, "Градиент", [
+        ["", "нет"], ["linear", "линейный"], ["radial", "радиальный"]
+      ], initial.gradient ? initial.gradient.type : "");
+      var gradientColors = document.createElement("div"); gradientColors.className = "gradient-colors";
+      grid.appendChild(gradientColors);
+      var gradientColor1 = colorField(gradientColors, "Цвет 1",
+        initial.gradient ? initial.gradient.color1 : [255,255,255]);
+      var gradientColor2 = colorField(gradientColors, "Цвет 2",
+        initial.gradient ? initial.gradient.color2 : [0,0,0]);
+      var gradientAngle = rangeNumberField(grid, "Угол",
+        initial.gradient ? initial.gradient.angle : 90, 0, 359, 1);
+      var shadowOn = checkField(grid, "Тень", !!initial.shadow);
+      var shadowColor = colorField(grid, "Цвет тени",
+        initial.shadow ? initial.shadow.color : [0,0,0]);
+      var shadowOpacity = rangeNumberField(grid, "Непрозрачность, %",
+        initial.shadow ? initial.shadow.opacity : 60, 0, 100, 1);
+      var shadowX = rangeNumberField(grid, "Смещение X", initial.shadow ? initial.shadow.x : 2, -200, 200, 1);
+      var shadowY = rangeNumberField(grid, "Смещение Y", initial.shadow ? initial.shadow.y : 2, -200, 200, 1);
+      var shadowBlur = rangeNumberField(grid, "Размытие", initial.shadow ? initial.shadow.blur : 3, 0, 200, 1);
+      function visibility() {
+        gradientColors.hidden = gradientType.value !== "linear";
+        gradientAngle.parentNode.hidden = gradientType.value !== "radial";
+      }
+      function read() {
+        return {
+          stroke: positiveOrNull(strokeSize.value) === null ? null :
+            {size: positiveOrNull(strokeSize.value), color: hexRgb(strokeColor.value)},
+          gradient: !gradientType.value ? null : {type: gradientType.value,
+            color1: hexRgb(gradientColor1.value), color2: hexRgb(gradientColor2.value),
+            angle: Number(gradientAngle.value) || 0},
+          shadow: !shadowOn.checked ? null : {color: hexRgb(shadowColor.value),
+            opacity: Number(shadowOpacity.value), x: Number(shadowX.value),
+            y: Number(shadowY.value), blur: Number(shadowBlur.value)}
+        };
+      }
+      var controls = [strokeSize, strokeColor, gradientType, gradientColor1, gradientColor2,
+        gradientAngle, shadowOn, shadowColor, shadowOpacity, shadowX, shadowY, shadowBlur];
+      controls.forEach(function (input) {
+        input.onfocus = function () { select(r.id, false); };
+        input.oninput = changeStyle;
+      });
+      gradientType.onchange = function () { visibility(); changeStyle(); };
+      var item = {block: block, title: title, read: read}; effectEditors.push(item);
+      remove.onclick = function () {
+        effectEditors.splice(effectEditors.indexOf(item), 1); block.remove(); renumberEffects(); changeStyle();
+      };
+      visibility(); renumberEffects(); return item;
     }
-    updateGradientVisibility();
+    function renumberEffects() {
+      effectEditors.forEach(function (item, i) { item.title.textContent = "Эффекты " + (i + 1); });
+    }
+    (currentStyle.effects.length ? currentStyle.effects : [{}]).forEach(addEffectBlock);
+    addEffect.onclick = function () { addEffectBlock({}); changeStyle(); };
     var width = numberField(editor, "Ширина рамки", positionOf(r)[2], "");
     var height = numberField(editor, "Высота рамки", positionOf(r)[3], "");
     var reset = document.createElement("button");
     reset.type = "button"; reset.className = "reset"; reset.textContent = "Сбросить оформление";
     editor.appendChild(reset);
-    [size, leading, align, color, width, height, bold, italic, underline, strokeSize,
-      strokeColor, gradientType, gradientColor1, gradientColor2, gradientAngle,
-      shadowOn, shadowColor, shadowOpacity, shadowX, shadowY, shadowBlur].forEach(function (input) {
+    [size, leading, align, color, width, height, bold, italic, underline].forEach(function (input) {
       input.onfocus = function () { select(r.id, false); };
     });
     function changeStyle() {
@@ -957,25 +1006,17 @@ function drawRegions() {
         size: positiveOrNull(size.value), leading: positiveOrNull(leading.value),
         align: align.value || null, color: colorTouched ? hexRgb(color.value) : null,
         bold: bold.checked, italic: italic.checked, underline: underline.checked,
-        stroke: positiveOrNull(strokeSize.value) === null ? null :
-          {size: positiveOrNull(strokeSize.value), color: hexRgb(strokeColor.value)},
-        gradient: !gradientType.value ? null : {type: gradientType.value,
-          color1: hexRgb(gradientColor1.value), color2: hexRgb(gradientColor2.value),
-          angle: Number(gradientAngle.value) || 0},
-        shadow: !shadowOn.checked ? null : {color: hexRgb(shadowColor.value),
-          opacity: Number(shadowOpacity.value), x: Number(shadowX.value),
-          y: Number(shadowY.value), blur: Number(shadowBlur.value)}
+        effects: effectEditors.map(function (item) { return item.read(); }).filter(function (fx) {
+          return fx.stroke || fx.gradient || fx.shadow;
+        })
       };
       if (sameStyle(style, originalStyle(r))) delete dirtyStyles[r.id];
       else dirtyStyles[r.id] = style;
       markCard(r.id);
       refreshPreviews(r);
     }
-    [size, leading, bold, italic, underline, strokeSize, strokeColor, gradientColor1,
-      gradientColor2, gradientAngle, shadowOn, shadowColor, shadowOpacity, shadowX,
-      shadowY, shadowBlur].forEach(function (input) { input.oninput = changeStyle; });
+    [size, leading, bold, italic, underline].forEach(function (input) { input.oninput = changeStyle; });
     align.onchange = changeStyle;
-    gradientType.onchange = function () { updateGradientVisibility(); changeStyle(); };
     color.oninput = function () { colorTouched = true; changeStyle(); };
     function changeFrame() {
       var old = positionOf(r), w = positiveOrNull(width.value), h = positiveOrNull(height.value);
@@ -995,11 +1036,11 @@ function drawRegions() {
       size.value = ""; leading.value = ""; align.value = "";
       color.value = rgbHex(r.fg || [0, 0, 0]);
       colorTouched = false;
-      bold.checked = italic.checked = underline.checked = shadowOn.checked = false;
-      strokeSize.value = ""; gradientType.value = "";
-      updateGradientVisibility();
+      bold.checked = italic.checked = underline.checked = false;
+      effectEditors.slice().forEach(function (item) { item.block.remove(); });
+      effectEditors = []; addEffectBlock({});
       var cleared = {size: null, leading: null, align: null, color: null,
-        bold: false, italic: false, underline: false, stroke: null, gradient: null, shadow: null};
+        bold: false, italic: false, underline: false, effects: []};
       if (sameStyle(cleared, originalStyle(r))) delete dirtyStyles[r.id];
       else dirtyStyles[r.id] = cleared;
       font.value = "";
@@ -1088,9 +1129,7 @@ function originalStyle(r) {
           color: r.typeset_color || null,
           bold: !!r.typeset_bold, italic: !!r.typeset_italic,
           underline: !!r.typeset_underline,
-          stroke: r.typeset_stroke || null,
-          gradient: r.typeset_gradient || null,
-          shadow: r.typeset_shadow || null};
+          effects: r.typeset_effects || []};
 }
 
 function sameStyle(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
