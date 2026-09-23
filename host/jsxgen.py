@@ -9,6 +9,7 @@
 обратного слэша — они теряются по дороге через COM. Все спецсимволы
 строим через String.fromCharCode. Проверено на грабли.
 """
+import json
 from typing import Dict, List, Any
 
 BS = chr(92)
@@ -58,7 +59,8 @@ def _region_literal(r: Dict[str, Any]) -> str:
     return (
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
         "size:%d,lead:%d,fixedSize:%d,fixedLead:%d,kind:%s,font:%s,align:%s,"
-        "onArt:%s,keep:%s,forceErase:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "onArt:%s,keep:%s,forceErase:%s,bold:%s,italic:%s,underline:%s,"
+        "stroke:%s,gradient:%s,shadow:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
@@ -72,6 +74,12 @@ def _region_literal(r: Dict[str, Any]) -> str:
             "true" if r.get("on_art") else "false",
             "true" if r.get("keep_lines") else "false",
             "true" if r.get("erase_only") else "false",
+            "true" if r.get("typeset_bold") else "false",
+            "true" if r.get("typeset_italic") else "false",
+            "true" if r.get("typeset_underline") else "false",
+            json.dumps(r.get("typeset_stroke"), separators=(",", ":")),
+            json.dumps(r.get("typeset_gradient"), separators=(",", ":")),
+            json.dumps(r.get("typeset_shadow"), separators=(",", ":")),
             color[0], color[1], color[2],
             bg[0], bg[1], bg[2],
         )
@@ -161,6 +169,108 @@ function languageOf() {
              .getObjectValue(0).getObjectValue(stringIDToTypeID('textStyle'));
   var k = stringIDToTypeID('textLanguage');
   return st.hasKey(k) ? typeIDToStringID(st.getEnumerationValue(k)) : 'unset';
+}
+
+function rgbObject(rgb) {
+  var d = new ActionDescriptor();
+  d.putDouble(stringIDToTypeID('red'), rgb[0]);
+  d.putDouble(stringIDToTypeID('green'), rgb[1]);
+  d.putDouble(stringIDToTypeID('blue'), rgb[2]);
+  return d;
+}
+
+function gradientObject(g) {
+  var d = new ActionDescriptor();
+  d.putString(stringIDToTypeID('name'), 'manga-tl');
+  d.putEnumerated(stringIDToTypeID('gradientForm'), stringIDToTypeID('gradientForm'),
+                  stringIDToTypeID('customStops'));
+  d.putDouble(stringIDToTypeID('interfaceIconFrameDimmed'), 4096);
+  var colors = new ActionList();
+  function stop(rgb, at) {
+    var s = new ActionDescriptor();
+    s.putObject(stringIDToTypeID('color'), stringIDToTypeID('RGBColor'), rgbObject(rgb));
+    s.putEnumerated(stringIDToTypeID('type'), stringIDToTypeID('colorStopType'),
+                    stringIDToTypeID('userStop'));
+    s.putInteger(stringIDToTypeID('location'), at);
+    s.putInteger(stringIDToTypeID('midpoint'), 50);
+    colors.putObject(stringIDToTypeID('colorStop'), s);
+  }
+  stop(g.color1, 0); stop(g.color2, 4096);
+  d.putList(stringIDToTypeID('colors'), colors);
+  var transparency = new ActionList();
+  function opacityStop(at) {
+    var s = new ActionDescriptor();
+    s.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), 100);
+    s.putInteger(stringIDToTypeID('location'), at); s.putInteger(stringIDToTypeID('midpoint'), 50);
+    transparency.putObject(stringIDToTypeID('transferSpec'), s);
+  }
+  opacityStop(0); opacityStop(4096);
+  d.putList(stringIDToTypeID('transparency'), transparency);
+  return d;
+}
+
+function applyLayerEffects(r) {
+  if (!r.stroke && !r.gradient && !r.shadow) return;
+  var fx = new ActionDescriptor();
+  fx.putUnitDouble(stringIDToTypeID('scale'), stringIDToTypeID('percentUnit'), 100);
+  if (r.stroke) {
+    var st = new ActionDescriptor();
+    st.putBoolean(stringIDToTypeID('enabled'), true);
+    st.putBoolean(stringIDToTypeID('present'), true);
+    st.putBoolean(stringIDToTypeID('showInDialog'), true);
+    st.putEnumerated(stringIDToTypeID('style'), stringIDToTypeID('frameStyle'),
+                     stringIDToTypeID('outsetFrame'));
+    st.putEnumerated(stringIDToTypeID('paintType'), stringIDToTypeID('frameFill'),
+                     stringIDToTypeID('solidColor'));
+    st.putEnumerated(stringIDToTypeID('mode'), stringIDToTypeID('blendMode'),
+                     stringIDToTypeID('normal'));
+    st.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), 100);
+    st.putUnitDouble(stringIDToTypeID('size'), stringIDToTypeID('pixelsUnit'), r.stroke.size);
+    st.putObject(stringIDToTypeID('color'), stringIDToTypeID('RGBColor'), rgbObject(r.stroke.color));
+    fx.putObject(stringIDToTypeID('frameFX'), stringIDToTypeID('frameFX'), st);
+  }
+  if (r.gradient) {
+    var gr = new ActionDescriptor();
+    gr.putBoolean(stringIDToTypeID('enabled'), true);
+    gr.putBoolean(stringIDToTypeID('present'), true);
+    gr.putBoolean(stringIDToTypeID('showInDialog'), true);
+    gr.putEnumerated(stringIDToTypeID('mode'), stringIDToTypeID('blendMode'), stringIDToTypeID('normal'));
+    gr.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), 100);
+    gr.putObject(stringIDToTypeID('gradient'), stringIDToTypeID('gradientClassEvent'),
+                 gradientObject(r.gradient));
+    gr.putUnitDouble(stringIDToTypeID('angle'), stringIDToTypeID('angleUnit'), r.gradient.angle);
+    gr.putEnumerated(stringIDToTypeID('type'), stringIDToTypeID('gradientType'),
+                     stringIDToTypeID(r.gradient.type));
+    gr.putBoolean(stringIDToTypeID('reverse'), false);
+    gr.putBoolean(stringIDToTypeID('dither'), true);
+    gr.putBoolean(stringIDToTypeID('align'), true);
+    gr.putUnitDouble(stringIDToTypeID('scale'), stringIDToTypeID('percentUnit'), 100);
+    fx.putObject(stringIDToTypeID('gradientFill'), stringIDToTypeID('gradientFill'), gr);
+  }
+  if (r.shadow) {
+    var sh = new ActionDescriptor();
+    sh.putBoolean(stringIDToTypeID('enabled'), true);
+    sh.putBoolean(stringIDToTypeID('present'), true);
+    sh.putBoolean(stringIDToTypeID('showInDialog'), true);
+    sh.putEnumerated(stringIDToTypeID('mode'), stringIDToTypeID('blendMode'), stringIDToTypeID('multiply'));
+    sh.putObject(stringIDToTypeID('color'), stringIDToTypeID('RGBColor'), rgbObject(r.shadow.color));
+    sh.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), r.shadow.opacity);
+    sh.putBoolean(stringIDToTypeID('useGlobalAngle'), false);
+    var angle = Math.atan2(r.shadow.y, r.shadow.x) * 180 / Math.PI;
+    var distance = Math.sqrt(r.shadow.x * r.shadow.x + r.shadow.y * r.shadow.y);
+    sh.putUnitDouble(stringIDToTypeID('localLightingAngle'), stringIDToTypeID('angleUnit'), angle);
+    sh.putUnitDouble(stringIDToTypeID('distance'), stringIDToTypeID('pixelsUnit'), distance);
+    sh.putUnitDouble(stringIDToTypeID('chokeMatte'), stringIDToTypeID('pixelsUnit'), 0);
+    sh.putUnitDouble(stringIDToTypeID('blur'), stringIDToTypeID('pixelsUnit'), r.shadow.blur);
+    fx.putObject(stringIDToTypeID('dropShadow'), stringIDToTypeID('dropShadow'), sh);
+  }
+  var set = new ActionDescriptor(), ref = new ActionReference();
+  ref.putProperty(stringIDToTypeID('property'), stringIDToTypeID('layerEffects'));
+  ref.putEnumerated(stringIDToTypeID('layer'), stringIDToTypeID('ordinal'),
+                    stringIDToTypeID('targetEnum'));
+  set.putReference(stringIDToTypeID('null'), ref);
+  set.putObject(stringIDToTypeID('to'), stringIDToTypeID('layerEffects'), fx);
+  executeAction(stringIDToTypeID('set'), set, DialogModes.NO);
 }
 
 // Подгон кегля. Ключевой момент: у абзацного текста лишнее просто
@@ -317,6 +427,10 @@ step('typeset_all', function () {
       var chosenFont = r.font || FONT;
       if (!FONT_OK[chosenFont]) throw new Error('font not installed: ' + chosenFont);
       ti.font = chosenFont;
+      try { ti.fauxBold = r.bold; } catch (e) {}
+      try { ti.fauxItalic = r.italic; } catch (e) {}
+      try { ti.underline = r.underline ? UnderlineType.UNDERLINELEFT : UnderlineType.UNDERLINEOFF; }
+      catch (e) {}
       // Реплика центруется, список — нет: у содержания и титров левый край
       // ровный, и переносить его в центр значит разъехаться с линейками.
       ti.justification = r.align == 'left' ? Justification.LEFT
@@ -341,6 +455,7 @@ step('typeset_all', function () {
       var th = parseFloat(b[3]) - parseFloat(b[1]);
       var dy = r.keep ? 0 : Math.max(0, Math.round((r.sh - th) / 2));
       ti.position = [r.sx, r.sy + dy];
+      applyLayerEffects(r);
       placed++;
     } catch (e) { R.push('{"step":"text:' + r.id + '","ok":false,"info":' + jstr(e) + '}'); }
   }

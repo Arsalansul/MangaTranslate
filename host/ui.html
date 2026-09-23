@@ -103,6 +103,14 @@
     background: #fff; color: var(--ink); }
   .editor input[type=color] { padding: 1px; height: 27px; }
   .editor .reset { grid-column: span 2; }
+  .editor .wide { grid-column: 1 / -1; }
+  .style-toggles { display: flex; gap: 12px; color: var(--ink); }
+  .style-toggles label { font-size: 12px; }
+  .style-toggles input { display: inline; width: auto; margin: 0 3px 0 0; }
+  .effects { border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px; }
+  .effects summary { cursor: pointer; color: var(--dim); }
+  .effects-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
+    gap: 5px; margin-top: 6px; }
   .reg .font[hidden], .reg .editor[hidden] { display: none; }
   .reg.dirty textarea, .reg.dirty .font { border-color: var(--warn); background: #fffdf3; }
   .tag { border: 1px solid var(--line); border-radius: 8px; padding: 0 5px;
@@ -715,7 +723,8 @@ function refreshPreviews(r) {
     if (!preview || !span) return;
     var text = effectiveText(r) || "", style = effectiveStyle(r);
     span.textContent = text;
-    preview.style.color = rgbHex(style.color || r.fg || [0, 0, 0]);
+    var baseColor = rgbHex(style.color || r.fg || [0, 0, 0]);
+    preview.style.color = baseColor;
     preview.style.background = r.on_art ? "rgba(255,255,255,.18)" :
       "rgb(" + (r.bg || [255, 255, 255]).join(",") + ")";
     var fontName = effectiveFont(r) || (info && info.font) || "";
@@ -724,6 +733,28 @@ function refreshPreviews(r) {
     preview.style.textAlign = style.align || (r.keep_lines ? "left" : "center");
     preview.style.justifyContent = preview.style.textAlign === "right" ? "flex-end" :
       (preview.style.textAlign === "left" ? "flex-start" : "center");
+    span.style.fontWeight = style.bold ? "bold" : "normal";
+    span.style.fontStyle = style.italic ? "italic" : "normal";
+    span.style.textDecoration = style.underline ? "underline" : "none";
+    var scale = box.parentNode.clientWidth / page.width;
+    span.style.webkitTextStroke = style.stroke ?
+      ((style.stroke.size * scale) + "px " + rgbHex(style.stroke.color)) : "0 transparent";
+    if (style.gradient) {
+      span.style.backgroundImage = style.gradient.type === "radial"
+        ? ("radial-gradient(" + rgbHex(style.gradient.color1) + "," +
+           rgbHex(style.gradient.color2) + ")")
+        : ("linear-gradient(" + style.gradient.angle + "deg," +
+           rgbHex(style.gradient.color1) + "," + rgbHex(style.gradient.color2) + ")");
+      span.style.webkitBackgroundClip = "text"; span.style.backgroundClip = "text";
+      span.style.color = "transparent";
+    } else {
+      span.style.backgroundImage = "none"; span.style.webkitBackgroundClip = "border-box";
+      span.style.backgroundClip = "border-box"; span.style.color = "inherit";
+    }
+    span.style.textShadow = style.shadow ?
+      ((style.shadow.x * scale) + "px " + (style.shadow.y * scale) + "px " +
+       (style.shadow.blur * scale) + "px rgba(" + style.shadow.color.join(",") + "," +
+       (style.shadow.opacity / 100) + ")") : "none";
     fitPreview(preview, style.size, style.leading, r.font_px);
   });
 }
@@ -857,25 +888,73 @@ function drawRegions() {
     ], currentStyle.align || "");
     var color = colorField(editor, "Цвет", currentStyle.color || r.fg || [0, 0, 0]);
     var colorTouched = currentStyle.color != null;
+    var toggles = document.createElement("div"); toggles.className = "style-toggles wide";
+    var bold = checkField(toggles, "Жирный", currentStyle.bold);
+    var italic = checkField(toggles, "Курсив", currentStyle.italic);
+    var underline = checkField(toggles, "Подчёркнутый", currentStyle.underline);
+    editor.appendChild(toggles);
+    var effects = document.createElement("details"); effects.className = "effects wide";
+    var summary = document.createElement("summary"); summary.textContent = "Обводка, градиент и тень";
+    effects.appendChild(summary);
+    var effectsGrid = document.createElement("div"); effectsGrid.className = "effects-grid";
+    effects.appendChild(effectsGrid); editor.appendChild(effects);
+    var strokeSize = rangeNumberField(effectsGrid, "Обводка, px",
+      currentStyle.stroke ? currentStyle.stroke.size : "", 0, 100, 1);
+    var strokeColor = colorField(effectsGrid, "Цвет обводки",
+      currentStyle.stroke ? currentStyle.stroke.color : [255, 255, 255]);
+    var gradientType = selectField(effectsGrid, "Градиент", [
+      ["", "нет"], ["linear", "линейный"], ["radial", "радиальный"]
+    ], currentStyle.gradient ? currentStyle.gradient.type : "");
+    var gradientColor1 = colorField(effectsGrid, "Цвет 1",
+      currentStyle.gradient ? currentStyle.gradient.color1 : [255, 255, 255]);
+    var gradientColor2 = colorField(effectsGrid, "Цвет 2",
+      currentStyle.gradient ? currentStyle.gradient.color2 : [0, 0, 0]);
+    var gradientAngle = rangeNumberField(effectsGrid, "Угол",
+      currentStyle.gradient ? currentStyle.gradient.angle : 90, 0, 359, 1);
+    var shadowOn = checkField(effectsGrid, "Тень", !!currentStyle.shadow);
+    var shadowColor = colorField(effectsGrid, "Цвет тени",
+      currentStyle.shadow ? currentStyle.shadow.color : [0, 0, 0]);
+    var shadowOpacity = rangeNumberField(effectsGrid, "Непрозрачность, %",
+      currentStyle.shadow ? currentStyle.shadow.opacity : 60, 0, 100, 1);
+    var shadowX = rangeNumberField(effectsGrid, "Смещение X",
+      currentStyle.shadow ? currentStyle.shadow.x : 2, -200, 200, 1);
+    var shadowY = rangeNumberField(effectsGrid, "Смещение Y",
+      currentStyle.shadow ? currentStyle.shadow.y : 2, -200, 200, 1);
+    var shadowBlur = rangeNumberField(effectsGrid, "Размытие",
+      currentStyle.shadow ? currentStyle.shadow.blur : 3, 0, 200, 1);
     var width = numberField(editor, "Ширина рамки", positionOf(r)[2], "");
     var height = numberField(editor, "Высота рамки", positionOf(r)[3], "");
     var reset = document.createElement("button");
     reset.type = "button"; reset.className = "reset"; reset.textContent = "Сбросить оформление";
     editor.appendChild(reset);
-    [size, leading, align, color, width, height].forEach(function (input) {
+    [size, leading, align, color, width, height, bold, italic, underline, strokeSize,
+      strokeColor, gradientType, gradientColor1, gradientColor2, gradientAngle,
+      shadowOn, shadowColor, shadowOpacity, shadowX, shadowY, shadowBlur].forEach(function (input) {
       input.onfocus = function () { select(r.id, false); };
     });
     function changeStyle() {
       var style = {
         size: positiveOrNull(size.value), leading: positiveOrNull(leading.value),
-        align: align.value || null, color: colorTouched ? hexRgb(color.value) : null
+        align: align.value || null, color: colorTouched ? hexRgb(color.value) : null,
+        bold: bold.checked, italic: italic.checked, underline: underline.checked,
+        stroke: positiveOrNull(strokeSize.value) === null ? null :
+          {size: positiveOrNull(strokeSize.value), color: hexRgb(strokeColor.value)},
+        gradient: !gradientType.value ? null : {type: gradientType.value,
+          color1: hexRgb(gradientColor1.value), color2: hexRgb(gradientColor2.value),
+          angle: Number(gradientAngle.value) || 0},
+        shadow: !shadowOn.checked ? null : {color: hexRgb(shadowColor.value),
+          opacity: Number(shadowOpacity.value), x: Number(shadowX.value),
+          y: Number(shadowY.value), blur: Number(shadowBlur.value)}
       };
       if (sameStyle(style, originalStyle(r))) delete dirtyStyles[r.id];
       else dirtyStyles[r.id] = style;
       markCard(r.id);
       refreshPreviews(r);
     }
-    size.oninput = leading.oninput = align.onchange = changeStyle;
+    [size, leading, bold, italic, underline, strokeSize, strokeColor, gradientColor1,
+      gradientColor2, gradientAngle, shadowOn, shadowColor, shadowOpacity, shadowX,
+      shadowY, shadowBlur].forEach(function (input) { input.oninput = changeStyle; });
+    align.onchange = gradientType.onchange = changeStyle;
     color.oninput = function () { colorTouched = true; changeStyle(); };
     function changeFrame() {
       var old = positionOf(r), w = positiveOrNull(width.value), h = positiveOrNull(height.value);
@@ -895,7 +974,10 @@ function drawRegions() {
       size.value = ""; leading.value = ""; align.value = "";
       color.value = rgbHex(r.fg || [0, 0, 0]);
       colorTouched = false;
-      var cleared = {size: null, leading: null, align: null, color: null};
+      bold.checked = italic.checked = underline.checked = shadowOn.checked = false;
+      strokeSize.value = ""; gradientType.value = "";
+      var cleared = {size: null, leading: null, align: null, color: null,
+        bold: false, italic: false, underline: false, stroke: null, gradient: null, shadow: null};
       if (sameStyle(cleared, originalStyle(r))) delete dirtyStyles[r.id];
       else dirtyStyles[r.id] = cleared;
       font.value = "";
@@ -935,6 +1017,20 @@ function numberField(editor, label, value, placeholder) {
   return fieldLabel(editor, label, input);
 }
 
+function rangeNumberField(editor, label, value, min, max, step) {
+  var input = document.createElement("input"); input.type = "number";
+  input.min = String(min); input.max = String(max); input.step = String(step);
+  input.value = value == null ? "" : value;
+  return fieldLabel(editor, label, input);
+}
+
+function checkField(editor, label, checked) {
+  var wrap = document.createElement("label");
+  var input = document.createElement("input"); input.type = "checkbox"; input.checked = !!checked;
+  wrap.appendChild(input); wrap.appendChild(document.createTextNode(label)); editor.appendChild(wrap);
+  return input;
+}
+
 function selectField(editor, label, options, value) {
   var select = document.createElement("select");
   options.forEach(function (o) { addOption(select, o[0], o[1]); });
@@ -966,7 +1062,12 @@ function originalStyle(r) {
   return {size: r.typeset_size == null ? null : r.typeset_size,
           leading: r.typeset_leading == null ? null : r.typeset_leading,
           align: r.typeset_align || null,
-          color: r.typeset_color || null};
+          color: r.typeset_color || null,
+          bold: !!r.typeset_bold, italic: !!r.typeset_italic,
+          underline: !!r.typeset_underline,
+          stroke: r.typeset_stroke || null,
+          gradient: r.typeset_gradient || null,
+          shadow: r.typeset_shadow || null};
 }
 
 function sameStyle(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
