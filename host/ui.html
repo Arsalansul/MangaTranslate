@@ -377,6 +377,7 @@
     <div class="f">
       <label for="p-path">Папка проекта</label>
       <input id="p-path" placeholder="E:/Манга/Регрессирующий рыцарь" spellcheck="false">
+      <button class="pick-folder" data-for="p-path">Выбрать…</button>
     </div>
     <div class="note">Её создадут, если такой ещё нет.</div>
     <div class="f">
@@ -386,6 +387,7 @@
     <div class="f">
       <label for="p-src">Оригиналы</label>
       <input id="p-src" placeholder="папка, в подпапках которой лежат главы" spellcheck="false">
+      <button class="pick-folder" data-for="p-src">Выбрать…</button>
     </div>
     <div class="note">Главы — подпапки этой папки. Можно указать и позже.</div>
     <div class="f"><label></label><button id="p-create">Создать проект</button></div>
@@ -394,6 +396,7 @@
     <div class="f">
       <label for="p-open">Папка проекта</label>
       <input id="p-open" placeholder="папка, в которой лежит project.json" spellcheck="false">
+      <button class="pick-folder" data-for="p-open">Выбрать…</button>
       <button id="p-openbtn">Открыть</button>
     </div>
     <div id="p-recent"></div>
@@ -405,6 +408,7 @@
     <div class="f">
       <label for="p-source">Оригиналы</label>
       <input id="p-source" placeholder="папка, в подпапках которой лежат главы" spellcheck="false">
+      <button class="pick-folder" data-for="p-source">Выбрать…</button>
       <button id="p-rebind">Перепривязать</button>
     </div>
     <div class="note">Если папка переехала, укажите новую: главы сопоставятся по
@@ -1656,6 +1660,15 @@ $("p-create").onclick = function () {
 };
 $("p-openbtn").onclick = function () { openProject($("p-open").value.trim()); };
 $("p-open").onkeydown = function (e) { if (e.key === "Enter") $("p-openbtn").onclick(); };
+[].forEach.call(document.querySelectorAll(".pick-folder"), function (button) {
+  button.onclick = function () {
+    var input = $(button.dataset.for);
+    button.disabled = true;
+    api("/api/pick-folder", {start: input.value.trim()}).then(function (data) {
+      if (data.path) input.value = data.path;
+    }).catch(fail).then(function () { button.disabled = false; });
+  };
+});
 $("p-rebind").onclick = function () {
   api("/api/project/settings", {source: $("p-source").value.trim()})
     .then(function (data) {

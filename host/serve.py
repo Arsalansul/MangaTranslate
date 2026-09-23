@@ -570,6 +570,28 @@ def api_ui(query):
         return "text/html; charset=utf-8", f.read()
 
 
+def api_pick_folder(body):
+    """Системный диалог Windows; браузер сам полный путь раскрывать не умеет."""
+    try:
+        import tkinter
+        import tkinter.filedialog
+    except ImportError as e:
+        raise ApiError(500, "В Python нет компонента выбора папки: " + str(e))
+    start = body.get("start") or ""
+    if not isinstance(start, str):
+        raise ApiError(400, "start должен быть строкой")
+    start = os.path.abspath(start) if start and os.path.isdir(start) else os.getcwd()
+    root = tkinter.Tk()
+    root.withdraw()
+    try:
+        root.attributes("-topmost", True)
+        path = tkinter.filedialog.askdirectory(
+            parent=root, initialdir=start, title="Выберите папку", mustexist=False)
+    finally:
+        root.destroy()
+    return {"path": os.path.abspath(path) if path else ""}
+
+
 # --- настройки прогона ------------------------------------------------
 
 def _fonts():
@@ -992,6 +1014,7 @@ POST = {
     "/api/run": api_run,
     "/api/cancel": api_cancel,
     "/api/retypeset": api_retypeset,
+    "/api/pick-folder": api_pick_folder,
     "/api/key": api_key,
     "/api/project/open": api_project_open,
     "/api/project/create": api_project_create,
