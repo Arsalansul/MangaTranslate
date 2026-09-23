@@ -973,7 +973,7 @@ function drawRegions() {
       function visibility() {
         gradientParams.hidden = !gradientType.value;
         gradientColors.hidden = !gradientType.value;
-        gradientAngle.parentNode.hidden = gradientType.value !== "linear";
+        gradientAngle.parentNode.hidden = gradientType.value !== "radial";
       }
       function read() {
         return {
