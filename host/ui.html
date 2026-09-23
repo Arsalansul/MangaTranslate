@@ -764,6 +764,7 @@ function refreshPreviews(r) {
     while (outlines.length > groups.length) outlines.pop().remove();
     groups.forEach(function (fx, i) {
       var outline = outlines[i]; outline.textContent = text; outline.style.zIndex = String(i);
+      outline.style.webkitTextFillColor = "transparent";
       outline.style.webkitTextStroke = fx.stroke ?
         ((fx.stroke.size * 2 * scale) + "px " + rgbHex(fx.stroke.color)) : "0 transparent";
       outline.style.textShadow = fx.shadow ? ((fx.shadow.x * scale) + "px " +
@@ -775,14 +776,16 @@ function refreshPreviews(r) {
     groups.forEach(function (fx) { if (fx.gradient) gradient = fx.gradient; });
     if (gradient) {
       span.style.backgroundImage = gradient.type === "radial"
-        ? ("radial-gradient(" + rgbHex(gradient.color1) + "," + rgbHex(gradient.color2) + ")")
+        ? ("radial-gradient(circle at center," + rgbHex(gradient.color1) + " 0%," +
+           rgbHex(gradient.color2) + " 100%)")
         : ("linear-gradient(" + gradient.angle + "deg," +
            rgbHex(gradient.color1) + "," + rgbHex(gradient.color2) + ")");
       span.style.webkitBackgroundClip = "text"; span.style.backgroundClip = "text";
-      span.style.color = "transparent";
+      span.style.color = "transparent"; span.style.webkitTextFillColor = "transparent";
     } else {
       span.style.backgroundImage = "none"; span.style.webkitBackgroundClip = "border-box";
       span.style.backgroundClip = "border-box"; span.style.color = "inherit";
+      span.style.webkitTextFillColor = baseColor;
     }
     span.style.textShadow = "none";
     fitPreview(preview, style.size, style.leading, r.font_px);
@@ -970,7 +973,7 @@ function drawRegions() {
       function visibility() {
         gradientParams.hidden = !gradientType.value;
         gradientColors.hidden = !gradientType.value;
-        gradientAngle.parentNode.hidden = gradientType.value !== "radial";
+        gradientAngle.parentNode.hidden = gradientType.value !== "linear";
       }
       function read() {
         return {
