@@ -111,6 +111,10 @@
   .effects summary { cursor: pointer; color: var(--dim); }
   .effects-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
     gap: 5px; margin-top: 6px; }
+  .effects-grid [hidden] { display: none; }
+  .check-field { display: flex; align-items: center; gap: 4px; align-self: end; min-height: 27px; }
+  .editor .check-field input { display: inline; width: auto; margin: 0; }
+  .gradient-colors { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
   .reg .font[hidden], .reg .editor[hidden] { display: none; }
   .reg.dirty textarea, .reg.dirty .font { border-color: var(--warn); background: #fffdf3; }
   .tag { border: 1px solid var(--line); border-radius: 8px; padding: 0 5px;
@@ -737,8 +741,7 @@ function refreshPreviews(r) {
     span.style.fontStyle = style.italic ? "italic" : "normal";
     span.style.textDecoration = style.underline ? "underline" : "none";
     var scale = box.parentNode.clientWidth / page.width;
-    span.style.webkitTextStroke = style.stroke ?
-      ((style.stroke.size * scale) + "px " + rgbHex(style.stroke.color)) : "0 transparent";
+    span.style.webkitTextStroke = "0 transparent";
     if (style.gradient) {
       span.style.backgroundImage = style.gradient.type === "radial"
         ? ("radial-gradient(" + rgbHex(style.gradient.color1) + "," +
@@ -751,10 +754,21 @@ function refreshPreviews(r) {
       span.style.backgroundImage = "none"; span.style.webkitBackgroundClip = "border-box";
       span.style.backgroundClip = "border-box"; span.style.color = "inherit";
     }
-    span.style.textShadow = style.shadow ?
-      ((style.shadow.x * scale) + "px " + (style.shadow.y * scale) + "px " +
-       (style.shadow.blur * scale) + "px rgba(" + style.shadow.color.join(",") + "," +
-       (style.shadow.opacity / 100) + ")") : "none";
+    var shadows = [];
+    if (style.stroke) {
+      var radius = style.stroke.size * scale, strokeColor = rgbHex(style.stroke.color);
+      for (var ring = Math.max(.5, radius / 2); ring <= radius + .01; ring += Math.max(.5, radius / 2)) {
+        for (var ai = 0; ai < 16; ai++) {
+          var a = Math.PI * 2 * ai / 16;
+          shadows.push((Math.cos(a) * ring).toFixed(2) + "px " +
+            (Math.sin(a) * ring).toFixed(2) + "px 0 " + strokeColor);
+        }
+      }
+    }
+    if (style.shadow) shadows.push((style.shadow.x * scale) + "px " +
+      (style.shadow.y * scale) + "px " + (style.shadow.blur * scale) + "px rgba(" +
+      style.shadow.color.join(",") + "," + (style.shadow.opacity / 100) + ")");
+    span.style.textShadow = shadows.length ? shadows.join(",") : "none";
     fitPreview(preview, style.size, style.leading, r.font_px);
   });
 }
@@ -905,9 +919,11 @@ function drawRegions() {
     var gradientType = selectField(effectsGrid, "Градиент", [
       ["", "нет"], ["linear", "линейный"], ["radial", "радиальный"]
     ], currentStyle.gradient ? currentStyle.gradient.type : "");
-    var gradientColor1 = colorField(effectsGrid, "Цвет 1",
+    var gradientColors = document.createElement("div"); gradientColors.className = "gradient-colors";
+    effectsGrid.appendChild(gradientColors);
+    var gradientColor1 = colorField(gradientColors, "Цвет 1",
       currentStyle.gradient ? currentStyle.gradient.color1 : [255, 255, 255]);
-    var gradientColor2 = colorField(effectsGrid, "Цвет 2",
+    var gradientColor2 = colorField(gradientColors, "Цвет 2",
       currentStyle.gradient ? currentStyle.gradient.color2 : [0, 0, 0]);
     var gradientAngle = rangeNumberField(effectsGrid, "Угол",
       currentStyle.gradient ? currentStyle.gradient.angle : 90, 0, 359, 1);
@@ -922,6 +938,11 @@ function drawRegions() {
       currentStyle.shadow ? currentStyle.shadow.y : 2, -200, 200, 1);
     var shadowBlur = rangeNumberField(effectsGrid, "Размытие",
       currentStyle.shadow ? currentStyle.shadow.blur : 3, 0, 200, 1);
+    function updateGradientVisibility() {
+      gradientColors.hidden = gradientType.value !== "linear";
+      gradientAngle.parentNode.hidden = gradientType.value !== "radial";
+    }
+    updateGradientVisibility();
     var width = numberField(editor, "Ширина рамки", positionOf(r)[2], "");
     var height = numberField(editor, "Высота рамки", positionOf(r)[3], "");
     var reset = document.createElement("button");
@@ -954,7 +975,8 @@ function drawRegions() {
     [size, leading, bold, italic, underline, strokeSize, strokeColor, gradientColor1,
       gradientColor2, gradientAngle, shadowOn, shadowColor, shadowOpacity, shadowX,
       shadowY, shadowBlur].forEach(function (input) { input.oninput = changeStyle; });
-    align.onchange = gradientType.onchange = changeStyle;
+    align.onchange = changeStyle;
+    gradientType.onchange = function () { updateGradientVisibility(); changeStyle(); };
     color.oninput = function () { colorTouched = true; changeStyle(); };
     function changeFrame() {
       var old = positionOf(r), w = positiveOrNull(width.value), h = positiveOrNull(height.value);
@@ -976,6 +998,7 @@ function drawRegions() {
       colorTouched = false;
       bold.checked = italic.checked = underline.checked = shadowOn.checked = false;
       strokeSize.value = ""; gradientType.value = "";
+      updateGradientVisibility();
       var cleared = {size: null, leading: null, align: null, color: null,
         bold: false, italic: false, underline: false, stroke: null, gradient: null, shadow: null};
       if (sameStyle(cleared, originalStyle(r))) delete dirtyStyles[r.id];
@@ -1026,6 +1049,7 @@ function rangeNumberField(editor, label, value, min, max, step) {
 
 function checkField(editor, label, checked) {
   var wrap = document.createElement("label");
+  wrap.className = "check-field";
   var input = document.createElement("input"); input.type = "checkbox"; input.checked = !!checked;
   wrap.appendChild(input); wrap.appendChild(document.createTextNode(label)); editor.appendChild(wrap);
   return input;
