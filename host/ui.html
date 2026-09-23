@@ -120,7 +120,11 @@
   .effects-grid [hidden] { display: none; }
   .check-field { display: flex; align-items: center; gap: 4px; align-self: end; min-height: 27px; }
   .editor .check-field input { display: inline; width: auto; margin: 0; }
-  .gradient-colors { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .gradient-params { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .gradient-colors { display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+    grid-column: 1 / -1; }
+  .gradient-angle { grid-column: 1 / -1; }
+  .shadow-toggle { grid-column: 1; }
   .add-effect { width: 100%; margin-top: 6px; }
   .reg .font[hidden], .reg .editor[hidden] { display: none; }
   .reg.dirty textarea, .reg.dirty .font { border-color: var(--warn); background: #fffdf3; }
@@ -943,15 +947,19 @@ function drawRegions() {
       var gradientType = selectField(grid, "Градиент", [
         ["", "нет"], ["linear", "линейный"], ["radial", "радиальный"]
       ], initial.gradient ? initial.gradient.type : "");
+      var gradientParams = document.createElement("div"); gradientParams.className = "gradient-params";
+      grid.appendChild(gradientParams);
       var gradientColors = document.createElement("div"); gradientColors.className = "gradient-colors";
-      grid.appendChild(gradientColors);
+      gradientParams.appendChild(gradientColors);
       var gradientColor1 = colorField(gradientColors, "Цвет 1",
         initial.gradient ? initial.gradient.color1 : [255,255,255]);
       var gradientColor2 = colorField(gradientColors, "Цвет 2",
         initial.gradient ? initial.gradient.color2 : [0,0,0]);
-      var gradientAngle = rangeNumberField(grid, "Угол",
+      var gradientAngle = rangeNumberField(gradientParams, "Угол",
         initial.gradient ? initial.gradient.angle : 90, 0, 359, 1);
+      gradientAngle.parentNode.classList.add("gradient-angle");
       var shadowOn = checkField(grid, "Тень", !!initial.shadow);
+      shadowOn.parentNode.classList.add("shadow-toggle");
       var shadowColor = colorField(grid, "Цвет тени",
         initial.shadow ? initial.shadow.color : [0,0,0]);
       var shadowOpacity = rangeNumberField(grid, "Непрозрачность, %",
@@ -960,7 +968,8 @@ function drawRegions() {
       var shadowY = rangeNumberField(grid, "Смещение Y", initial.shadow ? initial.shadow.y : 2, -200, 200, 1);
       var shadowBlur = rangeNumberField(grid, "Размытие", initial.shadow ? initial.shadow.blur : 3, 0, 200, 1);
       function visibility() {
-        gradientColors.hidden = gradientType.value !== "linear";
+        gradientParams.hidden = !gradientType.value;
+        gradientColors.hidden = !gradientType.value;
         gradientAngle.parentNode.hidden = gradientType.value !== "radial";
       }
       function read() {
