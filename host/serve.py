@@ -332,6 +332,7 @@ def _brief(r):
         }] if r.get("typeset_stroke") or r.get("typeset_gradient") or r.get("typeset_shadow") else []),
         "typeset_blur": r.get("typeset_blur"),
         "typeset_warp": r.get("typeset_warp"),
+        "typeset_liquify": r.get("typeset_liquify"),
         "conf": round(float(r.get("conf") or 0.0), 2),
         # Правило «что вообще переводится» живёт в translate.py в одном
         # экземпляре; повторять его в JavaScript нельзя — разъедется.
@@ -501,6 +502,7 @@ def api_save(body):
         effects = style.get("effects", [])
         blur = style.get("blur")
         warp = style.get("warp")
+        liquify = style.get("liquify")
         for field, value in (("size", size), ("leading", leading)):
             if value is not None and (isinstance(value, bool) or
                                       not isinstance(value, (int, float)) or value <= 0 or value > 1000):
@@ -603,6 +605,25 @@ def api_save(body):
                 raise ApiError(400, "Некорректная деформация текста: " + str(rid))
             warp = {"style": warp["style"], "direction": warp["direction"],
                     "bend": float(nums[0]), "horizontal": float(nums[1]), "vertical": float(nums[2])}
+        if liquify is not None:
+            if not isinstance(liquify, dict):
+                raise ApiError(400, "Некорректная пластика: " + str(rid))
+            size, pressure, strokes = liquify.get("size"), liquify.get("pressure"), liquify.get("strokes")
+            if (any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (size, pressure)) or
+                    not 1 <= size <= 100 or not 1 <= pressure <= 100 or
+                    not isinstance(strokes, list) or not 1 <= len(strokes) <= 200):
+                raise ApiError(400, "Некорректные параметры кисти пластики: " + str(rid))
+            clean_strokes = []
+            for stroke in strokes:
+                keys = ("x", "y", "dx", "dy", "radius", "pressure")
+                nums = [stroke.get(k) for k in keys] if isinstance(stroke, dict) else []
+                if (len(nums) != 6 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in nums) or
+                        not 0 <= nums[0] <= 1 or not 0 <= nums[1] <= 1 or
+                        not -2 <= nums[2] <= 2 or not -2 <= nums[3] <= 2 or
+                        not .001 <= nums[4] <= 1 or not 0 <= nums[5] <= 1):
+                    raise ApiError(400, "Некорректный штрих пластики: " + str(rid))
+                clean_strokes.append(dict(zip(keys, [float(v) for v in nums])))
+            liquify = {"size": float(size), "pressure": float(pressure), "strokes": clean_strokes}
         values = {
             "typeset_size": int(round(size)) if size is not None else None,
             "typeset_leading": int(round(leading)) if leading is not None else None,
@@ -614,6 +635,7 @@ def api_save(body):
             "typeset_effects": clean_effects or None,
             "typeset_blur": blur,
             "typeset_warp": warp,
+            "typeset_liquify": liquify,
             "typeset_stroke": None, "typeset_gradient": None, "typeset_shadow": None,
         }
         for key, value in values.items():

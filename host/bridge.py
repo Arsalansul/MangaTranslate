@@ -12,7 +12,9 @@ PowerShell для COM. Это осознанно: тяжёлые зависим�
     -> PSD со слоями + PNG на проверку
 """
 import json
+import math
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -135,6 +137,54 @@ def _fwd(p: str) -> str:
     return os.path.abspath(p).replace(SEP, "/")
 
 
+def _liquify_map(region: dict, directory: str, index: int) -> dict:
+    """Рисует RGB displacement map: красный канал двигает X, зелёный Y."""
+    liquid = region.get("typeset_liquify")
+    if not liquid or not liquid.get("strokes"):
+        return region
+    _, _, rw, rh = region.get("safe_box") or region["bbox"]
+    width, height = max(8, min(512, int(rw))), max(8, min(512, int(rh)))
+    vx, vy = [0.0] * (width * height), [0.0] * (width * height)
+    max_x = max(abs(float(s["dx"]) * rw) for s in liquid["strokes"]) or 1.0
+    max_y = max(abs(float(s["dy"]) * rh) for s in liquid["strokes"]) or 1.0
+    for stroke in liquid["strokes"]:
+        cx, cy = float(stroke["x"]) * width, float(stroke["y"]) * height
+        radius = max(1.0, float(stroke["radius"]) * min(width, height))
+        x0, x1 = max(0, int(cx - radius)), min(width - 1, int(cx + radius))
+        y0, y1 = max(0, int(cy - radius)), min(height - 1, int(cy + radius))
+        pressure = float(stroke["pressure"])
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                distance = math.hypot(x - cx, y - cy)
+                if distance >= radius:
+                    continue
+                influence = (1.0 - distance / radius) ** 2 * pressure
+                at = y * width + x
+                vx[at] += float(stroke["dx"]) * rw * influence
+                vy[at] += float(stroke["dy"]) * rh * influence
+    row_size = (width * 3 + 3) & ~3
+    pixels = bytearray(row_size * height)
+    for y in range(height):
+        dest = (height - 1 - y) * row_size
+        for x in range(width):
+            at, off = y * width + x, dest + x * 3
+            red = max(0, min(255, round(128 + 127 * vx[at] / max_x)))
+            green = max(0, min(255, round(128 + 127 * vy[at] / max_y)))
+            pixels[off:off + 3] = bytes((128, green, red))
+    bmp = os.path.join(directory, "liquify-%d.bmp" % index)
+    psd = os.path.join(directory, "liquify-%d.psd" % index)
+    size = 54 + len(pixels)
+    header = (b"BM" + struct.pack("<IHHI", size, 0, 0, 54) +
+              struct.pack("<IIIHHIIIIII", 40, width, height, 1, 24, 0,
+                          len(pixels), 2835, 2835, 0, 0))
+    with open(bmp, "wb") as file:
+        file.write(header); file.write(pixels)
+    result = dict(region)
+    result.update({"typeset_liquify_map": _fwd(bmp), "typeset_liquify_psd": _fwd(psd),
+                   "typeset_liquify_x": max_x, "typeset_liquify_y": max_y})
+    return result
+
+
 def run_jsx(jsx: str, timeout: int = 900) -> str:
     """Отдаёт скрипт Photoshop через COM и возвращает его результат."""
     fd, jsx_path = tempfile.mkstemp(suffix=".jsx", text=True)
@@ -191,12 +241,25 @@ def render(analysis: dict, src_img: str, out_dir: str, font: str = DEFAULT_FONT,
     png = os.path.join(out_dir, stem + ".png")
     rep = os.path.join(out_dir, stem + ".report.json")
 
-    jsx = jsxgen.build(
-        src_img=_fwd(page_img or src_img), psd_out=_fwd(psd), png_out=_fwd(png), report_out=_fwd(rep),
-        regions=analysis["regions"], font=font, erase_only=erase_only,
-        lang=translate.ps_language(lang), erase_ids=erase_ids,
-    )
-    result = run_jsx(jsx)
+    map_dir = tempfile.mkdtemp(prefix="manga-tl-liquify-")
+    try:
+        regions = [_liquify_map(region, map_dir, i) for i, region in enumerate(analysis["regions"])]
+        jsx = jsxgen.build(
+            src_img=_fwd(page_img or src_img), psd_out=_fwd(psd), png_out=_fwd(png), report_out=_fwd(rep),
+            regions=regions, font=font, erase_only=erase_only,
+            lang=translate.ps_language(lang), erase_ids=erase_ids,
+        )
+        result = run_jsx(jsx)
+    finally:
+        for name in os.listdir(map_dir):
+            try:
+                os.unlink(os.path.join(map_dir, name))
+            except OSError:
+                pass
+        try:
+            os.rmdir(map_dir)
+        except OSError:
+            pass
 
     report = []
     if os.path.isfile(rep):

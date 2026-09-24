@@ -64,6 +64,7 @@
   .box.none { border-style: dashed; border-color: rgba(120,120,120,.5); }
   .box.cleanup { border: 2px dashed #2868a8; background: rgba(50,125,205,.16); }
   .box.manual-text { border: 2px dashed #8a4da8; }
+  .box.liquify { cursor: crosshair; box-shadow: 0 0 0 2px #7950a8; }
   .holder.draw-cleanup { cursor: crosshair; }
   .draft-cleanup { position: absolute; border: 2px dashed #2868a8;
     background: rgba(50,125,205,.22); pointer-events: none; }
@@ -468,6 +469,7 @@ var dirty = {};       // id -> новый перевод, ещё не запис
 var dirtyPos = {};    // id -> вручную передвинутый safe_box
 var dirtyFonts = {};  // id -> PostScript-имя шрифта (пустое = общий)
 var dirtyStyles = {}; // id -> ручные кегль, интерлиньяж, выключка и цвет
+var liquifyTool = null; // активная кисть пластики для одного региона
 var dirtyCreates = {}; // id -> новая область принудительной очистки
 var dirtyDeletes = {}; // id -> удалить ложную область
 var sel = null;       // выделенный регион
@@ -619,6 +621,7 @@ function side(kind, name, caption) {
     b.appendChild(preview);
     b.onclick = function () { if (!b._dragged) select(r.id, true); b._dragged = false; };
     b.onpointerdown = function (e) { startDrag(e, r, b); };
+    b.classList.toggle("liquify", !!liquifyTool && liquifyTool.id === r.id);
     holder.appendChild(b);
   });
   holder.classList.toggle("no-preview", !previewOn || kind === "src");
@@ -644,6 +647,7 @@ function startDrag(e, r, box) {
   e.stopPropagation();
   if (drawMode) return;
   if (e.button !== 0) return;
+  if (liquifyTool && liquifyTool.id === r.id) { startLiquify(e, r, box); return; }
   e.preventDefault();
   select(r.id, false);
   var holder = box.parentNode, rect = holder.getBoundingClientRect();
@@ -673,6 +677,32 @@ function startDrag(e, r, box) {
     box.onpointermove = box.onpointerup = box.onpointercancel = null;
     box._dragged = moved;
   };
+}
+
+function startLiquify(e, r, box) {
+  e.preventDefault(); select(r.id, false);
+  var rect = box.getBoundingClientRect();
+  var lastX = e.clientX, lastY = e.clientY, segments = [];
+  box.setPointerCapture(e.pointerId);
+  box.onpointermove = function (ev) {
+    var dx = (ev.clientX - lastX) / rect.width, dy = (ev.clientY - lastY) / rect.height;
+    if (Math.abs(dx) + Math.abs(dy) < .003 || segments.length >= 200) return;
+    segments.push({x: Math.max(0, Math.min(1, (lastX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (lastY - rect.top) / rect.height)), dx: dx, dy: dy,
+      radius: liquifyTool.size / 100, pressure: liquifyTool.pressure / 100});
+    lastX = ev.clientX; lastY = ev.clientY;
+  };
+  box.onpointerup = function () {
+    box.onpointermove = box.onpointerup = box.onpointercancel = null;
+    if (!segments.length) return;
+    var style = JSON.parse(JSON.stringify(effectiveStyle(r)));
+    var liquid = style.liquify || {size: liquifyTool.size, pressure: liquifyTool.pressure, strokes: []};
+    liquid.size = liquifyTool.size; liquid.pressure = liquifyTool.pressure;
+    liquid.strokes = liquid.strokes.concat(segments).slice(-200);
+    style.liquify = liquid; dirtyStyles[r.id] = style;
+    markCard(r.id); refreshPreviews(r); drawRegions(); select(r.id, false);
+  };
+  box.onpointercancel = function () { box.onpointermove = box.onpointerup = box.onpointercancel = null; };
 }
 
 function beginRegionDraw(e, holder) {
@@ -819,7 +849,7 @@ function refreshPreviews(r) {
     }
     span.style.textShadow = "none";
     fitPreview(preview, style.size, style.leading, r.font_px);
-    applyWarpPreview(stack, style.warp);
+    applyWarpPreview(stack, style.warp, style.liquify);
   });
 }
 
@@ -827,10 +857,10 @@ function refreshPreviews(r) {
 // В браузере повторяем характер пресетов на отдельных символах. Числа здесь
 // намеренно зависят от текущего кегля: при масштабировании страницы форма
 // остаётся той же, а не становится сильнее или слабее.
-function applyWarpPreview(stack, warp) {
-  if (!warp) return;
-  var bend = warp.bend / 100, horizontal = warp.horizontal / 100;
-  var vertical = warp.vertical / 100, verticalMode = warp.direction === "vertical";
+function applyWarpPreview(stack, warp, liquify) {
+  if (!warp && !liquify) return;
+  var bend = warp ? warp.bend / 100 : 0, horizontal = warp ? warp.horizontal / 100 : 0;
+  var vertical = warp ? warp.vertical / 100 : 0, verticalMode = warp && warp.direction === "vertical";
   [].forEach.call(stack.children, function (layer) {
     var text = layer.textContent, lines = text.split("\n");
     var chars = []; layer.textContent = "";
@@ -854,7 +884,7 @@ function applyWarpPreview(stack, warp) {
         var along = verticalMode ? height : width, across = verticalMode ? width : height;
         var da = 0, db = 0, rotate = 0, scaleX = 1, scaleY = 1;
         var arch = 1 - t * t;
-        switch (warp.style) {
+        switch (warp ? warp.style : "") {
           case "arc": db = -bend * arch * across * .42; rotate = bend * t * 42; break;
           case "arcLower": db = bend * t * t * across * .38; rotate = -bend * t * 30; break;
           case "arcUpper": db = -bend * t * t * across * .38; rotate = bend * t * 30; break;
@@ -881,6 +911,16 @@ function applyWarpPreview(stack, warp) {
         da += horizontal * cross * along * .12;
         db += vertical * t * across * .12;
         var tx = verticalMode ? db : da, ty = verticalMode ? da : db;
+        if (liquify) (liquify.strokes || []).forEach(function (stroke) {
+          var ddx = px / width - stroke.x, ddy = py / height - stroke.y;
+          var distance = Math.sqrt(ddx * ddx + ddy * ddy);
+          var radius = Math.max(.001, stroke.radius || liquify.size / 100);
+          if (distance < radius) {
+            var influence = Math.pow(1 - distance / radius, 2) *
+              (stroke.pressure == null ? liquify.pressure / 100 : stroke.pressure);
+            tx += stroke.dx * width * influence; ty += stroke.dy * height * influence;
+          }
+        });
         var angle = verticalMode ? -rotate : rotate;
         char.style.transform = "translate(" + tx + "px," + ty + "px) rotate(" + angle +
           "deg) scale(" + scaleX + "," + scaleY + ")";
@@ -1055,6 +1095,41 @@ function drawRegions() {
     warpStyle.onchange = function () { updateWarpVisibility(); changeStyle(); };
     warpDirection.onchange = changeStyle;
     updateWarpVisibility();
+    var liquid = currentStyle.liquify || {size: 25, pressure: 50, strokes: []};
+    var liquifySize = rangeNumberField(warpRow, "Кисть пластики, %", liquid.size, 1, 100, 1);
+    var liquifyPressure = rangeNumberField(warpRow, "Нажим, %", liquid.pressure, 1, 100, 1);
+    var liquifyButtons = document.createElement("div"); liquifyButtons.className = "wide";
+    var liquifyPaint = document.createElement("button"); liquifyPaint.type = "button";
+    liquifyPaint.textContent = "Рисовать пластику";
+    var liquifyClear = document.createElement("button"); liquifyClear.type = "button";
+    liquifyClear.textContent = "Очистить пластику"; liquifyClear.style.marginLeft = "5px";
+    liquifyButtons.appendChild(liquifyPaint); liquifyButtons.appendChild(liquifyClear); warpRow.appendChild(liquifyButtons);
+    var liquifyStrokes = (liquid.strokes || []).slice();
+    function readLiquify() {
+      return liquifyStrokes.length ? {size: Number(liquifySize.value), pressure: Number(liquifyPressure.value),
+        strokes: liquifyStrokes} : null;
+    }
+    function updateLiquifyButton() {
+      var active = liquifyTool && liquifyTool.id === r.id;
+      liquifyPaint.classList.toggle("on", active);
+      liquifyPaint.textContent = active ? "Закончить пластику" : "Рисовать пластику";
+      liquifyClear.disabled = !liquifyStrokes.length;
+    }
+    liquifyPaint.onclick = function () {
+      if (liquifyTool && liquifyTool.id === r.id) liquifyTool = null;
+      else liquifyTool = {id: r.id, size: Number(liquifySize.value), pressure: Number(liquifyPressure.value)};
+      updateLiquifyButton(); drawStage(); select(r.id, false);
+    };
+    liquifyClear.onclick = function () { liquifyStrokes = []; changeStyle(); updateLiquifyButton(); };
+    [liquifySize, liquifyPressure].forEach(function (input) {
+      input.oninput = function () {
+        if (liquifyTool && liquifyTool.id === r.id) {
+          liquifyTool.size = Number(liquifySize.value); liquifyTool.pressure = Number(liquifyPressure.value);
+        }
+        changeStyle();
+      };
+    });
+    updateLiquifyButton();
     var blurRow = document.createElement("div"); blurRow.className = "effects-grid blur-row";
     effects.appendChild(blurRow);
     var blurType = selectField(blurRow, "Размытие", [
@@ -1230,7 +1305,7 @@ function drawRegions() {
         size: positiveOrNull(size.value), leading: positiveOrNull(leading.value),
         align: align.value || null, color: colorTouched ? hexRgb(color.value) : null,
         bold: bold.checked, italic: italic.checked, underline: underline.checked,
-        blur: readBlur(), warp: readWarp(),
+        blur: readBlur(), warp: readWarp(), liquify: readLiquify(),
         effects: effectEditors.map(function (item) { return item.read(); }).filter(function (fx) {
           return fx.stroke || fx.gradient || fx.shadow || fx.outer_glow || fx.inner_glow;
         })
@@ -1264,10 +1339,11 @@ function drawRegions() {
       bold.checked = italic.checked = underline.checked = false;
       blurType.value = ""; updateBlurVisibility();
       warpStyle.value = ""; updateWarpVisibility();
+      liquifyStrokes = []; liquifyTool = null;
       effectEditors.slice().forEach(function (item) { item.block.remove(); });
       effectEditors = []; addEffectBlock({});
       var cleared = {size: null, leading: null, align: null, color: null,
-        bold: false, italic: false, underline: false, blur: null, warp: null, effects: []};
+        bold: false, italic: false, underline: false, blur: null, warp: null, liquify: null, effects: []};
       if (sameStyle(cleared, originalStyle(r))) delete dirtyStyles[r.id];
       else dirtyStyles[r.id] = cleared;
       font.value = "";
@@ -1358,6 +1434,7 @@ function originalStyle(r) {
           underline: !!r.typeset_underline,
           blur: r.typeset_blur || null,
           warp: r.typeset_warp || null,
+          liquify: r.typeset_liquify || null,
           effects: r.typeset_effects || []};
 }
 

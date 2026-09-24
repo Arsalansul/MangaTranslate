@@ -65,7 +65,8 @@ def _region_literal(r: Dict[str, Any]) -> str:
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
         "size:%d,lead:%d,fixedSize:%d,fixedLead:%d,kind:%s,font:%s,align:%s,"
         "onArt:%s,keep:%s,forceErase:%s,bold:%s,italic:%s,underline:%s,"
-        "effects:%s,blur:%s,warp:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "effects:%s,blur:%s,warp:%s,liquifyMap:%s,liquifyPsd:%s,liquifyX:%s,liquifyY:%s,"
+        "fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
@@ -85,6 +86,10 @@ def _region_literal(r: Dict[str, Any]) -> str:
             json.dumps(effects, separators=(",", ":")),
             json.dumps(r.get("typeset_blur"), separators=(",", ":")),
             json.dumps(r.get("typeset_warp"), separators=(",", ":")),
+            esc(r.get("typeset_liquify_map") or ""),
+            esc(r.get("typeset_liquify_psd") or ""),
+            float(r.get("typeset_liquify_x") or 0),
+            float(r.get("typeset_liquify_y") or 0),
             color[0], color[1], color[2],
             bg[0], bg[1], bg[2],
         )
@@ -338,6 +343,19 @@ function applyBlur(r) {
   }
 }
 
+function applyLiquify(r) {
+  if (!r.liquifyMap) return;
+  if (!r.blur) executeAction(stringIDToTypeID('newPlacedLayer'), undefined, DialogModes.NO);
+  var layer = doc.activeLayer; layer.name = r.id;
+  var mapDoc = app.open(File(r.liquifyMap));
+  var opts = new PhotoshopSaveOptions(); opts.layers = false;
+  mapDoc.saveAs(File(r.liquifyPsd), opts, true, Extension.LOWERCASE);
+  mapDoc.close(SaveOptions.DONOTSAVECHANGES);
+  app.activeDocument = doc; doc.activeLayer = layer;
+  layer.applyDisplace(Math.max(1, r.liquifyX), Math.max(1, r.liquifyY),
+    DisplacementMapType.STRETCHTOFIT, UndefinedAreas.REPEATEDGEPIXELS, File(r.liquifyPsd));
+}
+
 function applyTextWarp(ti, warp) {
   if (!warp) return;
   var styles = {
@@ -540,6 +558,7 @@ step('typeset_all', function () {
       // пересчитывает warp и визуально сводит его на нет.
       applyTextWarp(ti, r.warp);
       applyBlur(r);
+      applyLiquify(r);
       applyLayerEffects(r);
       placed++;
     } catch (e) { R.push('{"step":"text:' + r.id + '","ok":false,"info":' + jstr(e) + '}'); }
