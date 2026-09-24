@@ -145,8 +145,6 @@ def _liquify_map(region: dict, directory: str, index: int) -> dict:
     _, _, rw, rh = region.get("safe_box") or region["bbox"]
     width, height = max(8, min(512, int(rw))), max(8, min(512, int(rh)))
     vx, vy = [0.0] * (width * height), [0.0] * (width * height)
-    max_x = max(abs(float(s["dx"]) * rw) for s in liquid["strokes"]) or 1.0
-    max_y = max(abs(float(s["dy"]) * rh) for s in liquid["strokes"]) or 1.0
     for stroke in liquid["strokes"]:
         cx, cy = float(stroke["x"]) * width, float(stroke["y"]) * height
         radius = max(1.0, float(stroke["radius"]) * min(width, height))
@@ -165,14 +163,22 @@ def _liquify_map(region: dict, directory: str, index: int) -> dict:
                 at = y * width + x
                 vx[at] += float(stroke["dx"]) * rw * influence
                 vy[at] += float(stroke["dy"]) * rh * influence
+    # Масштаб Displace задаётся отдельно от значений карты. Он должен быть
+    # максимумом уже сложенного поля, а не длиной одного pointer-сегмента:
+    # один жест обычно состоит из десятков коротких сегментов.
+    max_x = max((abs(value) for value in vx), default=0.0)
+    max_y = max((abs(value) for value in vy), default=0.0)
+    # SVG feDisplacementMap в предпросмотре имеет один scale. Общий масштаб
+    # для обоих каналов делает браузерную и Photoshop-карты идентичными.
+    max_shift = max(max_x, max_y, 1.0)
     row_size = (width * 3 + 3) & ~3
     pixels = bytearray(row_size * height)
     for y in range(height):
         dest = (height - 1 - y) * row_size
         for x in range(width):
             at, off = y * width + x, dest + x * 3
-            red = max(0, min(255, round(128 + 127 * vx[at] / max_x)))
-            green = max(0, min(255, round(128 + 127 * vy[at] / max_y)))
+            red = max(0, min(255, round(128 + 127 * vx[at] / max_shift)))
+            green = max(0, min(255, round(128 + 127 * vy[at] / max_shift)))
             pixels[off:off + 3] = bytes((128, green, red))
     bmp = os.path.join(directory, "liquify-%d.bmp" % index)
     psd = os.path.join(directory, "liquify-%d.psd" % index)
@@ -184,7 +190,7 @@ def _liquify_map(region: dict, directory: str, index: int) -> dict:
         file.write(header); file.write(pixels)
     result = dict(region)
     result.update({"typeset_liquify_map": _fwd(bmp), "typeset_liquify_psd": _fwd(psd),
-                   "typeset_liquify_x": max_x, "typeset_liquify_y": max_y})
+                   "typeset_liquify_x": max_shift, "typeset_liquify_y": max_shift})
     return result
 
 

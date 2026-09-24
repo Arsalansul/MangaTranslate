@@ -804,7 +804,7 @@ function refreshPreviews(r) {
       else if (style.blur.type === "motion") blurPx = Math.max(1, style.blur.distance * .12);
       else blurPx = Math.max(1, style.blur.amount * .04);
     }
-    stack.style.filter = blurPx ? ("blur(" + (blurPx * scale) + "px)") : "none";
+    stack.style.filter = "none";
     stack.style.transform = "none";
     var outlines = [].slice.call(stack.querySelectorAll(".preview-outline"));
     while (outlines.length < groups.length) {
@@ -853,7 +853,8 @@ function refreshPreviews(r) {
     }
     span.style.textShadow = "none";
     fitPreview(preview, style.size, style.leading, r.font_px);
-    applyWarpPreview(stack, style.warp, style.liquify);
+    applyWarpPreview(stack, style.warp);
+    applyLiquifyPreview(stack, style.liquify, blurPx * scale, r.id);
   });
 }
 
@@ -861,10 +862,10 @@ function refreshPreviews(r) {
 // В браузере повторяем характер пресетов на отдельных символах. Числа здесь
 // намеренно зависят от текущего кегля: при масштабировании страницы форма
 // остаётся той же, а не становится сильнее или слабее.
-function applyWarpPreview(stack, warp, liquify) {
-  if (!warp && !liquify) return;
-  var bend = warp ? warp.bend / 100 : 0, horizontal = warp ? warp.horizontal / 100 : 0;
-  var vertical = warp ? warp.vertical / 100 : 0, verticalMode = warp && warp.direction === "vertical";
+function applyWarpPreview(stack, warp) {
+  if (!warp) return;
+  var bend = warp.bend / 100, horizontal = warp.horizontal / 100;
+  var vertical = warp.vertical / 100, verticalMode = warp.direction === "vertical";
   [].forEach.call(stack.children, function (layer) {
     var text = layer.textContent, lines = text.split("\n");
     var chars = []; layer.textContent = "";
@@ -888,7 +889,7 @@ function applyWarpPreview(stack, warp, liquify) {
         var along = verticalMode ? height : width, across = verticalMode ? width : height;
         var da = 0, db = 0, rotate = 0, scaleX = 1, scaleY = 1;
         var arch = 1 - t * t;
-        switch (warp ? warp.style : "") {
+        switch (warp.style) {
           case "arc": db = -bend * arch * across * .42; rotate = bend * t * 42; break;
           case "arcLower": db = bend * t * t * across * .38; rotate = -bend * t * 30; break;
           case "arcUpper": db = -bend * t * t * across * .38; rotate = bend * t * 30; break;
@@ -915,21 +916,61 @@ function applyWarpPreview(stack, warp, liquify) {
         da += horizontal * cross * along * .12;
         db += vertical * t * across * .12;
         var tx = verticalMode ? db : da, ty = verticalMode ? da : db;
-        if (liquify) (liquify.strokes || []).forEach(function (stroke) {
-          var ddx = px / width - stroke.x, ddy = py / height - stroke.y;
-          var distance = Math.sqrt(ddx * ddx + ddy * ddy);
-          var radius = Math.max(.001, stroke.radius || liquify.size / 100);
-          if (distance < radius) {
-            var influence = Math.pow(1 - distance / radius, 2) * .28 *
-              (stroke.pressure == null ? liquify.pressure / 100 : stroke.pressure);
-            tx += stroke.dx * width * influence; ty += stroke.dy * height * influence;
-          }
-        });
         var angle = verticalMode ? -rotate : rotate;
         char.style.transform = "translate(" + tx + "px," + ty + "px) rotate(" + angle +
           "deg) scale(" + scaleX + "," + scaleY + ")";
     });
   });
+}
+
+function applyLiquifyPreview(stack, liquify, blur, regionId) {
+  var old = document.getElementById("liquify-filter-" + regionId);
+  if (old) old.remove();
+  if (!liquify || !(liquify.strokes || []).length) {
+    stack.style.filter = blur ? ("blur(" + blur + "px)") : "none"; return;
+  }
+  var width = Math.max(8, Math.round(stack.clientWidth));
+  var height = Math.max(8, Math.round(stack.parentNode.clientHeight));
+  var vx = new Float32Array(width * height), vy = new Float32Array(width * height);
+  liquify.strokes.forEach(function (stroke) {
+    var cx = stroke.x * width, cy = stroke.y * height;
+    var radius = Math.max(1, (stroke.radius || liquify.size / 100) * Math.min(width, height));
+    var x0 = Math.max(0, Math.floor(cx - radius)), x1 = Math.min(width - 1, Math.ceil(cx + radius));
+    var y0 = Math.max(0, Math.floor(cy - radius)), y1 = Math.min(height - 1, Math.ceil(cy + radius));
+    var pressure = stroke.pressure == null ? liquify.pressure / 100 : stroke.pressure;
+    for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
+      var distance = Math.hypot(x - cx, y - cy); if (distance >= radius) continue;
+      var influence = Math.pow(1 - distance / radius, 2) * pressure * .28;
+      var at = y * width + x;
+      vx[at] += stroke.dx * width * influence; vy[at] += stroke.dy * height * influence;
+    }
+  });
+  var maxShift = 1;
+  for (var i = 0; i < vx.length; i++) maxShift = Math.max(maxShift, Math.abs(vx[i]), Math.abs(vy[i]));
+  var canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+  var ctx = canvas.getContext("2d"), image = ctx.createImageData(width, height);
+  for (var p = 0; p < vx.length; p++) {
+    image.data[p * 4] = Math.max(0, Math.min(255, Math.round(128 + 127 * vx[p] / maxShift)));
+    image.data[p * 4 + 1] = Math.max(0, Math.min(255, Math.round(128 + 127 * vy[p] / maxShift)));
+    image.data[p * 4 + 2] = 128; image.data[p * 4 + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  var ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("width", "0"); svg.setAttribute("height", "0");
+  svg.style.position = "absolute"; svg.id = "liquify-filter-" + regionId;
+  var filter = document.createElementNS(ns, "filter"); filter.id = svg.id + "-fx";
+  filter.setAttribute("x", "0%"); filter.setAttribute("y", "0%");
+  filter.setAttribute("width", "100%"); filter.setAttribute("height", "100%");
+  var map = document.createElementNS(ns, "feImage"); map.setAttribute("href", canvas.toDataURL());
+  map.setAttribute("x", "0"); map.setAttribute("y", "0");
+  map.setAttribute("width", "100%"); map.setAttribute("height", "100%");
+  map.setAttribute("preserveAspectRatio", "none"); map.setAttribute("result", "map");
+  var displace = document.createElementNS(ns, "feDisplacementMap");
+  displace.setAttribute("in", "SourceGraphic"); displace.setAttribute("in2", "map");
+  displace.setAttribute("scale", String(maxShift)); displace.setAttribute("xChannelSelector", "R");
+  displace.setAttribute("yChannelSelector", "G"); filter.appendChild(map); filter.appendChild(displace);
+  svg.appendChild(filter); document.body.appendChild(svg);
+  stack.style.filter = "url(#" + filter.id + ")" + (blur ? (" blur(" + blur + "px)") : "");
 }
 
 function ensurePreviewFont(name) {
