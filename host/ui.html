@@ -113,6 +113,9 @@
   .effects { border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px; }
   .effects summary { cursor: pointer; color: var(--dim); }
   .effect-block { border-top: 1px solid #e7e7e2; margin-top: 6px; padding-top: 5px; }
+  .blur-row { border-top: 1px solid #e7e7e2; margin-top: 6px; padding-top: 6px; }
+  .blur-params { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .blur-params [hidden] { display: none; }
   .effect-head { display: flex; align-items: center; color: var(--dim); font-size: 11px; }
   .effect-head button { margin-left: auto; padding: 0 5px; color: var(--bad); }
   .effects-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr));
@@ -756,6 +759,13 @@ function refreshPreviews(r) {
     span.style.textDecoration = style.underline ? "underline" : "none";
     var scale = box.parentNode.clientWidth / page.width;
     var groups = style.effects || [], stack = span.parentNode;
+    var blurPx = 0;
+    if (style.blur) {
+      if (style.blur.type === "gaussian") blurPx = style.blur.radius;
+      else if (style.blur.type === "motion") blurPx = Math.max(1, style.blur.distance * .12);
+      else blurPx = Math.max(1, style.blur.amount * .04);
+    }
+    stack.style.filter = blurPx ? ("blur(" + (blurPx * scale) + "px)") : "none";
     var outlines = [].slice.call(stack.querySelectorAll(".preview-outline"));
     while (outlines.length < groups.length) {
       var extra = document.createElement("span"); extra.className = "preview-outline";
@@ -927,8 +937,56 @@ function drawRegions() {
     var underline = checkField(toggles, "Подчёркнутый", currentStyle.underline);
     editor.appendChild(toggles);
     var effects = document.createElement("details"); effects.className = "effects wide";
-    var summary = document.createElement("summary"); summary.textContent = "Обводка, градиент и тень";
+    var summary = document.createElement("summary"); summary.textContent = "Размытие, обводка, градиент и тень";
     effects.appendChild(summary);
+    var blurRow = document.createElement("div"); blurRow.className = "effects-grid blur-row";
+    effects.appendChild(blurRow);
+    var blurType = selectField(blurRow, "Размытие", [
+      ["", "нет"], ["gaussian", "по Гауссу"], ["motion", "в движении"],
+      ["radial", "радиальное"]
+    ], currentStyle.blur ? currentStyle.blur.type : "");
+    var blurParams = document.createElement("div"); blurParams.className = "blur-params";
+    blurRow.appendChild(blurParams);
+    var blurRadius = rangeNumberField(blurParams, "Радиус",
+      currentStyle.blur && currentStyle.blur.type === "gaussian" ? currentStyle.blur.radius : 2,
+      .1, 250, .1);
+    var motionDistance = rangeNumberField(blurParams, "Расстояние",
+      currentStyle.blur && currentStyle.blur.type === "motion" ? currentStyle.blur.distance : 10,
+      1, 2000, 1);
+    var motionAngle = rangeNumberField(blurParams, "Угол",
+      currentStyle.blur && currentStyle.blur.type === "motion" ? currentStyle.blur.angle : 0,
+      0, 359, 1);
+    var radialAmount = rangeNumberField(blurParams, "Сила",
+      currentStyle.blur && currentStyle.blur.type === "radial" ? currentStyle.blur.amount : 10,
+      1, 100, 1);
+    var radialMethod = selectField(blurParams, "Метод", [
+      ["spin", "вращение"], ["zoom", "масштабирование"]
+    ], currentStyle.blur && currentStyle.blur.type === "radial" ? currentStyle.blur.method : "spin");
+    var radialQuality = selectField(blurParams, "Качество", [
+      ["draft", "черновое"], ["good", "хорошее"], ["best", "наилучшее"]
+    ], currentStyle.blur && currentStyle.blur.type === "radial" ? currentStyle.blur.quality : "good");
+    function updateBlurVisibility() {
+      blurParams.hidden = !blurType.value;
+      blurRadius.parentNode.hidden = blurType.value !== "gaussian";
+      motionDistance.parentNode.hidden = motionAngle.parentNode.hidden = blurType.value !== "motion";
+      radialAmount.parentNode.hidden = radialMethod.parentNode.hidden =
+        radialQuality.parentNode.hidden = blurType.value !== "radial";
+    }
+    function readBlur() {
+      if (blurType.value === "gaussian") return {type: "gaussian", radius: Number(blurRadius.value)};
+      if (blurType.value === "motion") return {type: "motion", distance: Number(motionDistance.value),
+        angle: Number(motionAngle.value)};
+      if (blurType.value === "radial") return {type: "radial", amount: Number(radialAmount.value),
+        method: radialMethod.value, quality: radialQuality.value};
+      return null;
+    }
+    [blurType, blurRadius, motionDistance, motionAngle, radialAmount, radialMethod,
+      radialQuality].forEach(function (input) {
+      input.onfocus = function () { select(r.id, false); };
+      input.oninput = changeStyle;
+    });
+    blurType.onchange = function () { updateBlurVisibility(); changeStyle(); };
+    updateBlurVisibility();
     var effectsList = document.createElement("div"); effects.appendChild(effectsList);
     var addEffect = document.createElement("button"); addEffect.type = "button";
     addEffect.className = "add-effect"; addEffect.textContent = "+ ещё один блок эффектов";
@@ -1018,6 +1076,7 @@ function drawRegions() {
         size: positiveOrNull(size.value), leading: positiveOrNull(leading.value),
         align: align.value || null, color: colorTouched ? hexRgb(color.value) : null,
         bold: bold.checked, italic: italic.checked, underline: underline.checked,
+        blur: readBlur(),
         effects: effectEditors.map(function (item) { return item.read(); }).filter(function (fx) {
           return fx.stroke || fx.gradient || fx.shadow;
         })
@@ -1049,10 +1108,11 @@ function drawRegions() {
       color.value = rgbHex(r.fg || [0, 0, 0]);
       colorTouched = false;
       bold.checked = italic.checked = underline.checked = false;
+      blurType.value = ""; updateBlurVisibility();
       effectEditors.slice().forEach(function (item) { item.block.remove(); });
       effectEditors = []; addEffectBlock({});
       var cleared = {size: null, leading: null, align: null, color: null,
-        bold: false, italic: false, underline: false, effects: []};
+        bold: false, italic: false, underline: false, blur: null, effects: []};
       if (sameStyle(cleared, originalStyle(r))) delete dirtyStyles[r.id];
       else dirtyStyles[r.id] = cleared;
       font.value = "";
@@ -1141,6 +1201,7 @@ function originalStyle(r) {
           color: r.typeset_color || null,
           bold: !!r.typeset_bold, italic: !!r.typeset_italic,
           underline: !!r.typeset_underline,
+          blur: r.typeset_blur || null,
           effects: r.typeset_effects || []};
 }
 

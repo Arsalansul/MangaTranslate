@@ -65,7 +65,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
         "size:%d,lead:%d,fixedSize:%d,fixedLead:%d,kind:%s,font:%s,align:%s,"
         "onArt:%s,keep:%s,forceErase:%s,bold:%s,italic:%s,underline:%s,"
-        "effects:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "effects:%s,blur:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
@@ -83,6 +83,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
             "true" if r.get("typeset_italic") else "false",
             "true" if r.get("typeset_underline") else "false",
             json.dumps(effects, separators=(",", ":")),
+            json.dumps(r.get("typeset_blur"), separators=(",", ":")),
             color[0], color[1], color[2],
             bg[0], bg[1], bg[2],
         )
@@ -294,6 +295,23 @@ function applyLayerEffects(r) {
   executeAction(stringIDToTypeID('set'), set, DialogModes.NO);
 }
 
+function applyBlur(r) {
+  if (!r.blur) return;
+  // Фильтр по обычному текстовому слою требует растрирования. Смарт-объект
+  // сохраняет исходный текст внутри и превращает размытие в Smart Filter.
+  executeAction(stringIDToTypeID('newPlacedLayer'), undefined, DialogModes.NO);
+  var layer = doc.activeLayer;
+  layer.name = r.id;
+  if (r.blur.type == 'gaussian') layer.applyGaussianBlur(r.blur.radius);
+  else if (r.blur.type == 'motion') layer.applyMotionBlur(r.blur.angle, r.blur.distance);
+  else if (r.blur.type == 'radial') {
+    var method = r.blur.method == 'zoom' ? RadialBlurMethod.ZOOM : RadialBlurMethod.SPIN;
+    var quality = r.blur.quality == 'best' ? RadialBlurQuality.BEST
+      : r.blur.quality == 'draft' ? RadialBlurQuality.DRAFT : RadialBlurQuality.GOOD;
+    layer.applyRadialBlur(r.blur.amount, method, quality);
+  }
+}
+
 // Подгон кегля. Ключевой момент: у абзацного текста лишнее просто
 // скрывается, и bounds покажет высоту рамки, а не текста. Поэтому меряем
 // в заведомо высокой рамке, и только потом сажаем в настоящую.
@@ -476,6 +494,7 @@ step('typeset_all', function () {
       var th = parseFloat(b[3]) - parseFloat(b[1]);
       var dy = r.keep ? 0 : Math.max(0, Math.round((r.sh - th) / 2));
       ti.position = [r.sx, r.sy + dy];
+      applyBlur(r);
       applyLayerEffects(r);
       placed++;
     } catch (e) { R.push('{"step":"text:' + r.id + '","ok":false,"info":' + jstr(e) + '}'); }

@@ -328,6 +328,7 @@ def _brief(r):
             "stroke": r.get("typeset_stroke"), "gradient": r.get("typeset_gradient"),
             "shadow": r.get("typeset_shadow")
         }] if r.get("typeset_stroke") or r.get("typeset_gradient") or r.get("typeset_shadow") else []),
+        "typeset_blur": r.get("typeset_blur"),
         "conf": round(float(r.get("conf") or 0.0), 2),
         # Правило «что вообще переводится» живёт в translate.py в одном
         # экземпляре; повторять его в JavaScript нельзя — разъедется.
@@ -495,6 +496,7 @@ def api_save(body):
         bold, italic = style.get("bold", False), style.get("italic", False)
         underline = style.get("underline", False)
         effects = style.get("effects", [])
+        blur = style.get("blur")
         for field, value in (("size", size), ("leading", leading)):
             if value is not None and (isinstance(value, bool) or
                                       not isinstance(value, (int, float)) or value <= 0 or value > 1000):
@@ -545,6 +547,30 @@ def api_save(body):
                     "blur": float(nums[3])}
             if clean["stroke"] or clean["gradient"] or clean["shadow"]:
                 clean_effects.append(clean)
+        if blur is not None:
+            if not isinstance(blur, dict) or blur.get("type") not in ("gaussian", "motion", "radial"):
+                raise ApiError(400, "Некорректный тип размытия: " + str(rid))
+            kind = blur["type"]
+            if kind == "gaussian":
+                radius = blur.get("radius")
+                if isinstance(radius, bool) or not isinstance(radius, (int, float)) or not 0.1 <= radius <= 250:
+                    raise ApiError(400, "Радиус размытия должен быть 0.1..250: " + str(rid))
+                blur = {"type": kind, "radius": float(radius)}
+            elif kind == "motion":
+                distance, angle = blur.get("distance"), blur.get("angle")
+                if (any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in (distance, angle)) or
+                        not 1 <= distance <= 2000):
+                    raise ApiError(400, "Некорректное размытие в движении: " + str(rid))
+                blur = {"type": kind, "distance": float(distance), "angle": float(angle) % 360}
+            else:
+                amount = blur.get("amount")
+                method, quality = blur.get("method"), blur.get("quality")
+                if (isinstance(amount, bool) or not isinstance(amount, (int, float)) or
+                        not 1 <= amount <= 100 or method not in ("spin", "zoom") or
+                        quality not in ("draft", "good", "best")):
+                    raise ApiError(400, "Некорректное радиальное размытие: " + str(rid))
+                blur = {"type": kind, "amount": int(round(amount)),
+                        "method": method, "quality": quality}
         values = {
             "typeset_size": int(round(size)) if size is not None else None,
             "typeset_leading": int(round(leading)) if leading is not None else None,
@@ -554,6 +580,7 @@ def api_save(body):
             "typeset_italic": True if italic else None,
             "typeset_underline": True if underline else None,
             "typeset_effects": clean_effects or None,
+            "typeset_blur": blur,
             "typeset_stroke": None, "typeset_gradient": None, "typeset_shadow": None,
         }
         for key, value in values.items():
