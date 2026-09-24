@@ -128,6 +128,9 @@
     grid-column: 1 / -1; }
   .gradient-angle { grid-column: 1 / -1; }
   .shadow-toggle { grid-column: 1; }
+  .glow-toggle { grid-column: 1 / -1; }
+  .glow-params { grid-column: 1 / -1; display: grid;
+    grid-template-columns: repeat(2, minmax(0,1fr)); gap: 5px; }
   .add-effect { width: 100%; margin-top: 6px; }
   .reg .font[hidden], .reg .editor[hidden] { display: none; }
   .reg.dirty textarea, .reg.dirty .font { border-color: var(--warn); background: #fffdf3; }
@@ -777,9 +780,23 @@ function refreshPreviews(r) {
       outline.style.webkitTextFillColor = "transparent";
       outline.style.webkitTextStroke = fx.stroke ?
         ((fx.stroke.size * 2 * scale) + "px " + rgbHex(fx.stroke.color)) : "0 transparent";
-      outline.style.textShadow = fx.shadow ? ((fx.shadow.x * scale) + "px " +
+      var glowShadows = [];
+      if (fx.shadow) glowShadows.push((fx.shadow.x * scale) + "px " +
         (fx.shadow.y * scale) + "px " + (fx.shadow.blur * scale) + "px rgba(" +
-        fx.shadow.color.join(",") + "," + (fx.shadow.opacity / 100) + ")") : "none";
+        fx.shadow.color.join(",") + "," + (fx.shadow.opacity / 100) + ")");
+      if (fx.outer_glow) {
+        var og = fx.outer_glow, spread = og.size * og.spread / 100;
+        glowShadows.push("0 0 " + Math.max(.5, og.size * scale) + "px rgba(" +
+          og.color.join(",") + "," + (og.opacity / 100) + ")");
+        if (spread) glowShadows.push("0 0 " + (spread * scale) + "px rgba(" +
+          og.color.join(",") + "," + (og.opacity / 100) + ")");
+      }
+      if (fx.inner_glow) {
+        var ig = fx.inner_glow;
+        glowShadows.push("0 0 " + Math.max(.5, ig.size * .45 * scale) + "px rgba(" +
+          ig.color.join(",") + "," + (ig.opacity / 100) + ")");
+      }
+      outline.style.textShadow = glowShadows.length ? glowShadows.join(",") : "none";
     });
     span.style.zIndex = String(groups.length + 1);
     var gradient = null;
@@ -1028,10 +1045,39 @@ function drawRegions() {
       var shadowX = rangeNumberField(grid, "Смещение X", initial.shadow ? initial.shadow.x : 2, -200, 200, 1);
       var shadowY = rangeNumberField(grid, "Смещение Y", initial.shadow ? initial.shadow.y : 2, -200, 200, 1);
       var shadowBlur = rangeNumberField(grid, "Размытие", initial.shadow ? initial.shadow.blur : 3, 0, 200, 1);
+      var outerGlowOn = checkField(grid, "Внешнее свечение", !!initial.outer_glow);
+      outerGlowOn.parentNode.classList.add("glow-toggle");
+      var outerGlowParams = document.createElement("div"); outerGlowParams.className = "glow-params";
+      grid.appendChild(outerGlowParams);
+      var outerGlowColor = colorField(outerGlowParams, "Цвет",
+        initial.outer_glow ? initial.outer_glow.color : [255,255,190]);
+      var outerGlowOpacity = rangeNumberField(outerGlowParams, "Непрозрачность, %",
+        initial.outer_glow ? initial.outer_glow.opacity : 75, 0, 100, 1);
+      var outerGlowSize = rangeNumberField(outerGlowParams, "Размер, px",
+        initial.outer_glow ? initial.outer_glow.size : 5, 0, 250, 1);
+      var outerGlowSpread = rangeNumberField(outerGlowParams, "Размах, %",
+        initial.outer_glow ? initial.outer_glow.spread : 0, 0, 100, 1);
+      var innerGlowOn = checkField(grid, "Внутреннее свечение", !!initial.inner_glow);
+      innerGlowOn.parentNode.classList.add("glow-toggle");
+      var innerGlowParams = document.createElement("div"); innerGlowParams.className = "glow-params";
+      grid.appendChild(innerGlowParams);
+      var innerGlowColor = colorField(innerGlowParams, "Цвет",
+        initial.inner_glow ? initial.inner_glow.color : [255,255,190]);
+      var innerGlowOpacity = rangeNumberField(innerGlowParams, "Непрозрачность, %",
+        initial.inner_glow ? initial.inner_glow.opacity : 75, 0, 100, 1);
+      var innerGlowSize = rangeNumberField(innerGlowParams, "Размер, px",
+        initial.inner_glow ? initial.inner_glow.size : 5, 0, 250, 1);
+      var innerGlowSpread = rangeNumberField(innerGlowParams, "Сжатие, %",
+        initial.inner_glow ? initial.inner_glow.spread : 0, 0, 100, 1);
+      var innerGlowSource = selectField(innerGlowParams, "Источник", [
+        ["edge", "с краёв"], ["center", "из центра"]
+      ], initial.inner_glow ? initial.inner_glow.source : "edge");
       function visibility() {
         gradientParams.hidden = !gradientType.value;
         gradientColors.hidden = !gradientType.value;
         gradientAngle.parentNode.hidden = gradientType.value !== "radial";
+        outerGlowParams.hidden = !outerGlowOn.checked;
+        innerGlowParams.hidden = !innerGlowOn.checked;
       }
       function read() {
         return {
@@ -1042,16 +1088,25 @@ function drawRegions() {
             angle: Number(gradientAngle.value) || 0},
           shadow: !shadowOn.checked ? null : {color: hexRgb(shadowColor.value),
             opacity: Number(shadowOpacity.value), x: Number(shadowX.value),
-            y: Number(shadowY.value), blur: Number(shadowBlur.value)}
+            y: Number(shadowY.value), blur: Number(shadowBlur.value)},
+          outer_glow: !outerGlowOn.checked ? null : {color: hexRgb(outerGlowColor.value),
+            opacity: Number(outerGlowOpacity.value), size: Number(outerGlowSize.value),
+            spread: Number(outerGlowSpread.value)},
+          inner_glow: !innerGlowOn.checked ? null : {color: hexRgb(innerGlowColor.value),
+            opacity: Number(innerGlowOpacity.value), size: Number(innerGlowSize.value),
+            spread: Number(innerGlowSpread.value), source: innerGlowSource.value}
         };
       }
       var controls = [strokeSize, strokeColor, gradientType, gradientColor1, gradientColor2,
-        gradientAngle, shadowOn, shadowColor, shadowOpacity, shadowX, shadowY, shadowBlur];
+        gradientAngle, shadowOn, shadowColor, shadowOpacity, shadowX, shadowY, shadowBlur,
+        outerGlowOn, outerGlowColor, outerGlowOpacity, outerGlowSize, outerGlowSpread,
+        innerGlowOn, innerGlowColor, innerGlowOpacity, innerGlowSize, innerGlowSpread, innerGlowSource];
       controls.forEach(function (input) {
         input.onfocus = function () { select(r.id, false); };
         input.oninput = changeStyle;
       });
       gradientType.onchange = function () { visibility(); changeStyle(); };
+      outerGlowOn.onchange = innerGlowOn.onchange = function () { visibility(); changeStyle(); };
       var item = {block: block, title: title, read: read}; effectEditors.push(item);
       remove.onclick = function () {
         effectEditors.splice(effectEditors.indexOf(item), 1); block.remove(); renumberEffects(); changeStyle();
@@ -1078,7 +1133,7 @@ function drawRegions() {
         bold: bold.checked, italic: italic.checked, underline: underline.checked,
         blur: readBlur(),
         effects: effectEditors.map(function (item) { return item.read(); }).filter(function (fx) {
-          return fx.stroke || fx.gradient || fx.shadow;
+          return fx.stroke || fx.gradient || fx.shadow || fx.outer_glow || fx.inner_glow;
         })
       };
       if (sameStyle(style, originalStyle(r))) delete dirtyStyles[r.id];

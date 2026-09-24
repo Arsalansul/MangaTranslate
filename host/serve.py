@@ -522,7 +522,9 @@ def api_save(body):
             if not isinstance(effect, dict):
                 raise ApiError(400, "Блок эффектов должен быть объектом: " + str(rid))
             stroke, gradient, shadow = effect.get("stroke"), effect.get("gradient"), effect.get("shadow")
-            clean = {"stroke": None, "gradient": None, "shadow": None}
+            outer_glow, inner_glow = effect.get("outer_glow"), effect.get("inner_glow")
+            clean = {"stroke": None, "gradient": None, "shadow": None,
+                     "outer_glow": None, "inner_glow": None}
             if stroke is not None:
                 if (not isinstance(stroke, dict) or not isinstance(stroke.get("size"), (int, float)) or
                         isinstance(stroke.get("size"), bool) or stroke["size"] <= 0 or stroke["size"] > 100):
@@ -545,7 +547,21 @@ def api_save(body):
                 clean["shadow"] = {"color": rgb(shadow.get("color"), "Цвет тени"),
                     "opacity": float(nums[0]), "x": float(nums[1]), "y": float(nums[2]),
                     "blur": float(nums[3])}
-            if clean["stroke"] or clean["gradient"] or clean["shadow"]:
+            for field, glow, inner in (("outer_glow", outer_glow, False),
+                                       ("inner_glow", inner_glow, True)):
+                if glow is None:
+                    continue
+                nums = [glow.get(k) for k in ("opacity", "size", "spread")] if isinstance(glow, dict) else []
+                source = glow.get("source", "edge") if isinstance(glow, dict) else "edge"
+                if (len(nums) != 3 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in nums) or
+                        not 0 <= nums[0] <= 100 or not 0 <= nums[1] <= 250 or
+                        not 0 <= nums[2] <= 100 or (inner and source not in ("edge", "center"))):
+                    raise ApiError(400, "Некорректное свечение: " + str(rid))
+                clean[field] = {"color": rgb(glow.get("color"), "Цвет свечения"),
+                    "opacity": float(nums[0]), "size": float(nums[1]), "spread": float(nums[2])}
+                if inner:
+                    clean[field]["source"] = source
+            if any(clean.values()):
                 clean_effects.append(clean)
         if blur is not None:
             if not isinstance(blur, dict) or blur.get("type") not in ("gaussian", "motion", "radial"):

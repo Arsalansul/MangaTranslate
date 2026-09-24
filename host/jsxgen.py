@@ -214,13 +214,15 @@ function gradientObject(g) {
 }
 
 function applyLayerEffects(r) {
-  var groups = r.effects || [], strokes = [], gradients = [], shadows = [];
+  var groups = r.effects || [], strokes = [], gradients = [], shadows = [], outerGlows = [], innerGlows = [];
   for (var gi = 0; gi < groups.length; gi++) {
     if (groups[gi].stroke) strokes.push(groups[gi].stroke);
     if (groups[gi].gradient) gradients.push(groups[gi].gradient);
     if (groups[gi].shadow) shadows.push(groups[gi].shadow);
+    if (groups[gi].outer_glow) outerGlows.push(groups[gi].outer_glow);
+    if (groups[gi].inner_glow) innerGlows.push(groups[gi].inner_glow);
   }
-  if (!strokes.length && !gradients.length && !shadows.length) return;
+  if (!strokes.length && !gradients.length && !shadows.length && !outerGlows.length && !innerGlows.length) return;
   var fx = new ActionDescriptor();
   fx.putUnitDouble(stringIDToTypeID('scale'), stringIDToTypeID('percentUnit'), 100);
   function strokeDesc(value) {
@@ -274,6 +276,27 @@ function applyLayerEffects(r) {
     sh.putUnitDouble(stringIDToTypeID('blur'), stringIDToTypeID('pixelsUnit'), value.blur);
     return sh;
   }
+  function glowDesc(value, inner) {
+    var gl = new ActionDescriptor();
+    gl.putBoolean(stringIDToTypeID('enabled'), true);
+    gl.putBoolean(stringIDToTypeID('present'), true);
+    gl.putBoolean(stringIDToTypeID('showInDialog'), true);
+    gl.putEnumerated(stringIDToTypeID('mode'), stringIDToTypeID('blendMode'), stringIDToTypeID('screen'));
+    gl.putObject(stringIDToTypeID('color'), stringIDToTypeID('RGBColor'), rgbObject(value.color));
+    gl.putUnitDouble(stringIDToTypeID('opacity'), stringIDToTypeID('percentUnit'), value.opacity);
+    gl.putEnumerated(stringIDToTypeID('glowTechnique'), stringIDToTypeID('glowTechnique'),
+                     stringIDToTypeID('softer'));
+    gl.putUnitDouble(stringIDToTypeID('chokeMatte'), stringIDToTypeID('pixelsUnit'),
+                     value.size * value.spread / 100);
+    gl.putUnitDouble(stringIDToTypeID('blur'), stringIDToTypeID('pixelsUnit'), value.size);
+    gl.putUnitDouble(stringIDToTypeID('noise'), stringIDToTypeID('percentUnit'), 0);
+    gl.putBoolean(stringIDToTypeID('antiAlias'), false);
+    gl.putUnitDouble(stringIDToTypeID('inputRange'), stringIDToTypeID('percentUnit'), 50);
+    gl.putUnitDouble(stringIDToTypeID('shadingNoise'), stringIDToTypeID('percentUnit'), 0);
+    if (inner) gl.putEnumerated(stringIDToTypeID('source'), stringIDToTypeID('innerGlowSource'),
+      stringIDToTypeID(value.source == 'center' ? 'centerGlow' : 'edgeGlow'));
+    return gl;
+  }
   function putMany(singleKey, multiKey, classKey, values, factory) {
     if (!values.length) return;
     if (values.length == 1) fx.putObject(stringIDToTypeID(singleKey), stringIDToTypeID(classKey), factory(values[0]));
@@ -286,6 +309,8 @@ function applyLayerEffects(r) {
   putMany('frameFX', 'frameFXMulti', 'frameFX', strokes, strokeDesc);
   putMany('gradientFill', 'gradientFillMulti', 'gradientFill', gradients, gradientDesc);
   putMany('dropShadow', 'dropShadowMulti', 'dropShadow', shadows, shadowDesc);
+  putMany('outerGlow', 'outerGlowMulti', 'outerGlow', outerGlows, function (v) { return glowDesc(v, false); });
+  putMany('innerGlow', 'innerGlowMulti', 'innerGlow', innerGlows, function (v) { return glowDesc(v, true); });
   var set = new ActionDescriptor(), ref = new ActionReference();
   ref.putProperty(stringIDToTypeID('property'), stringIDToTypeID('layerEffects'));
   ref.putEnumerated(stringIDToTypeID('layer'), stringIDToTypeID('ordinal'),
