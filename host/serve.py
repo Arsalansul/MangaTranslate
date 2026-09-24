@@ -329,6 +329,7 @@ def _brief(r):
             "shadow": r.get("typeset_shadow")
         }] if r.get("typeset_stroke") or r.get("typeset_gradient") or r.get("typeset_shadow") else []),
         "typeset_blur": r.get("typeset_blur"),
+        "typeset_warp": r.get("typeset_warp"),
         "conf": round(float(r.get("conf") or 0.0), 2),
         # Правило «что вообще переводится» живёт в translate.py в одном
         # экземпляре; повторять его в JavaScript нельзя — разъедется.
@@ -497,6 +498,7 @@ def api_save(body):
         underline = style.get("underline", False)
         effects = style.get("effects", [])
         blur = style.get("blur")
+        warp = style.get("warp")
         for field, value in (("size", size), ("leading", leading)):
             if value is not None and (isinstance(value, bool) or
                                       not isinstance(value, (int, float)) or value <= 0 or value > 1000):
@@ -587,6 +589,18 @@ def api_save(body):
                     raise ApiError(400, "Некорректное радиальное размытие: " + str(rid))
                 blur = {"type": kind, "amount": int(round(amount)),
                         "method": method, "quality": quality}
+        if warp is not None:
+            warp_styles = ("arc", "arcLower", "arcUpper", "arch", "bulge", "shellLower",
+                           "shellUpper", "flag", "wave", "fish", "rise", "fishEye",
+                           "inflate", "squeeze", "twist")
+            nums = [warp.get(k) for k in ("bend", "horizontal", "vertical")] if isinstance(warp, dict) else []
+            if (not isinstance(warp, dict) or warp.get("style") not in warp_styles or
+                    warp.get("direction") not in ("horizontal", "vertical") or
+                    len(nums) != 3 or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in nums) or
+                    any(not -100 <= v <= 100 for v in nums)):
+                raise ApiError(400, "Некорректная деформация текста: " + str(rid))
+            warp = {"style": warp["style"], "direction": warp["direction"],
+                    "bend": float(nums[0]), "horizontal": float(nums[1]), "vertical": float(nums[2])}
         values = {
             "typeset_size": int(round(size)) if size is not None else None,
             "typeset_leading": int(round(leading)) if leading is not None else None,
@@ -597,6 +611,7 @@ def api_save(body):
             "typeset_underline": True if underline else None,
             "typeset_effects": clean_effects or None,
             "typeset_blur": blur,
+            "typeset_warp": warp,
             "typeset_stroke": None, "typeset_gradient": None, "typeset_shadow": None,
         }
         for key, value in values.items():

@@ -65,7 +65,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
         "{id:%s,x:%d,y:%d,w:%d,h:%d,sx:%d,sy:%d,sw:%d,sh:%d,poly:%s,txt:%s,"
         "size:%d,lead:%d,fixedSize:%d,fixedLead:%d,kind:%s,font:%s,align:%s,"
         "onArt:%s,keep:%s,forceErase:%s,bold:%s,italic:%s,underline:%s,"
-        "effects:%s,blur:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
+        "effects:%s,blur:%s,warp:%s,fg:[%d,%d,%d],bg:[%d,%d,%d]}"
         % (
             esc(r["id"]), x, y, w, h, sx, sy, sw, sh, poly_js,
             esc(r.get("translation") or ""),
@@ -84,6 +84,7 @@ def _region_literal(r: Dict[str, Any]) -> str:
             "true" if r.get("typeset_underline") else "false",
             json.dumps(effects, separators=(",", ":")),
             json.dumps(r.get("typeset_blur"), separators=(",", ":")),
+            json.dumps(r.get("typeset_warp"), separators=(",", ":")),
             color[0], color[1], color[2],
             bg[0], bg[1], bg[2],
         )
@@ -337,6 +338,22 @@ function applyBlur(r) {
   }
 }
 
+function applyTextWarp(ti, warp) {
+  if (!warp) return;
+  var styles = {
+    arc: WarpStyle.ARC, arcLower: WarpStyle.ARCLOWER, arcUpper: WarpStyle.ARCUPPER,
+    arch: WarpStyle.ARCH, bulge: WarpStyle.BULGE, shellLower: WarpStyle.SHELLLOWER,
+    shellUpper: WarpStyle.SHELLUPPER, flag: WarpStyle.FLAG, wave: WarpStyle.WAVE,
+    fish: WarpStyle.FISH, rise: WarpStyle.RISE, fishEye: WarpStyle.FISHEYE,
+    inflate: WarpStyle.INFLATE, squeeze: WarpStyle.SQUEEZE, twist: WarpStyle.TWIST
+  };
+  ti.warpStyle = styles[warp.style];
+  ti.warpDirection = warp.direction == 'vertical' ? Direction.VERTICAL : Direction.HORIZONTAL;
+  ti.warpBend = warp.bend;
+  ti.warpHorizontalDistortion = warp.horizontal;
+  ti.warpVerticalDistortion = warp.vertical;
+}
+
 // Подгон кегля. Ключевой момент: у абзацного текста лишнее просто
 // скрывается, и bounds покажет высоту рамки, а не текста. Поэтому меряем
 // в заведомо высокой рамке, и только потом сажаем в настоящую.
@@ -512,6 +529,7 @@ step('typeset_all', function () {
       var startSize = Math.max(MIN_SIZE + 1, Math.round(r.size * 1.1));
       var fit = fitText(tl, r.sw, r.sh, startSize, MIN_SIZE, r.fixedSize, r.fixedLead);
       if (fit.textH < 0) overflow.push(r.id);
+      applyTextWarp(ti, r.warp);
 
       // Ставим настоящую рамку и центрируем текст по вертикали.
       ti.height = r.sh * K;

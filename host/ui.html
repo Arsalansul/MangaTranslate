@@ -114,6 +114,8 @@
   .effects summary { cursor: pointer; color: var(--dim); }
   .effect-block { border-top: 1px solid #e7e7e2; margin-top: 6px; padding-top: 5px; }
   .blur-row { border-top: 1px solid #e7e7e2; margin-top: 6px; padding-top: 6px; }
+  .warp-row { border-top: 1px solid #e7e7e2; margin-top: 6px; padding-top: 6px; }
+  .warp-params { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; grid-column: 1 / -1; }
   .blur-params { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
   .blur-params [hidden] { display: none; }
   .effect-head { display: flex; align-items: center; color: var(--dim); font-size: 11px; }
@@ -769,6 +771,13 @@ function refreshPreviews(r) {
       else blurPx = Math.max(1, style.blur.amount * .04);
     }
     stack.style.filter = blurPx ? ("blur(" + (blurPx * scale) + "px)") : "none";
+    if (style.warp) {
+      var warpSign = style.warp.direction === "vertical" ? -1 : 1;
+      stack.style.transform = "skew(" + (style.warp.horizontal * .12) + "deg," +
+        (style.warp.vertical * .12) + "deg) rotate(" +
+        (style.warp.bend * .035 * warpSign) + "deg)";
+      stack.style.transformOrigin = "center";
+    } else stack.style.transform = "none";
     var outlines = [].slice.call(stack.querySelectorAll(".preview-outline"));
     while (outlines.length < groups.length) {
       var extra = document.createElement("span"); extra.className = "preview-outline";
@@ -954,8 +963,37 @@ function drawRegions() {
     var underline = checkField(toggles, "Подчёркнутый", currentStyle.underline);
     editor.appendChild(toggles);
     var effects = document.createElement("details"); effects.className = "effects wide";
-    var summary = document.createElement("summary"); summary.textContent = "Размытие, обводка, градиент и тень";
+    var summary = document.createElement("summary"); summary.textContent = "Искажение, размытие и эффекты";
     effects.appendChild(summary);
+    var warpRow = document.createElement("div"); warpRow.className = "effects-grid warp-row";
+    effects.appendChild(warpRow);
+    var warpStyle = selectField(warpRow, "Деформация текста", [
+      ["", "нет"], ["arc", "дугой"], ["arcLower", "дугой снизу"],
+      ["arcUpper", "дугой сверху"], ["arch", "аркой"], ["bulge", "выпуклый"],
+      ["shellLower", "ракушка снизу"], ["shellUpper", "ракушка сверху"],
+      ["flag", "флаг"], ["wave", "волна"], ["fish", "рыба"], ["rise", "подъём"],
+      ["fishEye", "рыбий глаз"], ["inflate", "надутый"], ["squeeze", "сжатый"],
+      ["twist", "скрученный"]
+    ], currentStyle.warp ? currentStyle.warp.style : "");
+    var warpParams = document.createElement("div"); warpParams.className = "warp-params";
+    warpRow.appendChild(warpParams);
+    var warpDirection = selectField(warpParams, "Ориентация", [
+      ["horizontal", "горизонтальная"], ["vertical", "вертикальная"]
+    ], currentStyle.warp ? currentStyle.warp.direction : "horizontal");
+    var warpBend = rangeNumberField(warpParams, "Изгиб, %", currentStyle.warp ? currentStyle.warp.bend : 50, -100, 100, 1);
+    var warpHorizontal = rangeNumberField(warpParams, "По горизонтали, %", currentStyle.warp ? currentStyle.warp.horizontal : 0, -100, 100, 1);
+    var warpVertical = rangeNumberField(warpParams, "По вертикали, %", currentStyle.warp ? currentStyle.warp.vertical : 0, -100, 100, 1);
+    function updateWarpVisibility() { warpParams.hidden = !warpStyle.value; }
+    function readWarp() {
+      return !warpStyle.value ? null : {style: warpStyle.value, direction: warpDirection.value,
+        bend: Number(warpBend.value), horizontal: Number(warpHorizontal.value), vertical: Number(warpVertical.value)};
+    }
+    [warpStyle, warpDirection, warpBend, warpHorizontal, warpVertical].forEach(function (input) {
+      input.onfocus = function () { select(r.id, false); };
+      input.oninput = changeStyle;
+    });
+    warpStyle.onchange = function () { updateWarpVisibility(); changeStyle(); };
+    updateWarpVisibility();
     var blurRow = document.createElement("div"); blurRow.className = "effects-grid blur-row";
     effects.appendChild(blurRow);
     var blurType = selectField(blurRow, "Размытие", [
@@ -1131,7 +1169,7 @@ function drawRegions() {
         size: positiveOrNull(size.value), leading: positiveOrNull(leading.value),
         align: align.value || null, color: colorTouched ? hexRgb(color.value) : null,
         bold: bold.checked, italic: italic.checked, underline: underline.checked,
-        blur: readBlur(),
+        blur: readBlur(), warp: readWarp(),
         effects: effectEditors.map(function (item) { return item.read(); }).filter(function (fx) {
           return fx.stroke || fx.gradient || fx.shadow || fx.outer_glow || fx.inner_glow;
         })
@@ -1164,10 +1202,11 @@ function drawRegions() {
       colorTouched = false;
       bold.checked = italic.checked = underline.checked = false;
       blurType.value = ""; updateBlurVisibility();
+      warpStyle.value = ""; updateWarpVisibility();
       effectEditors.slice().forEach(function (item) { item.block.remove(); });
       effectEditors = []; addEffectBlock({});
       var cleared = {size: null, leading: null, align: null, color: null,
-        bold: false, italic: false, underline: false, blur: null, effects: []};
+        bold: false, italic: false, underline: false, blur: null, warp: null, effects: []};
       if (sameStyle(cleared, originalStyle(r))) delete dirtyStyles[r.id];
       else dirtyStyles[r.id] = cleared;
       font.value = "";
@@ -1257,6 +1296,7 @@ function originalStyle(r) {
           bold: !!r.typeset_bold, italic: !!r.typeset_italic,
           underline: !!r.typeset_underline,
           blur: r.typeset_blur || null,
+          warp: r.typeset_warp || null,
           effects: r.typeset_effects || []};
 }
 
