@@ -470,6 +470,7 @@ var dirtyPos = {};    // id -> вручную передвинутый safe_box
 var dirtyFonts = {};  // id -> PostScript-имя шрифта (пустое = общий)
 var dirtyStyles = {}; // id -> ручные кегль, интерлиньяж, выключка и цвет
 var liquifyTool = null; // активная кисть пластики для одного региона
+var liquifyEditors = {}; // обновление открытого редактора без его пересоздания
 var dirtyCreates = {}; // id -> новая область принудительной очистки
 var dirtyDeletes = {}; // id -> удалить ложную область
 var sel = null;       // выделенный регион
@@ -695,12 +696,15 @@ function startLiquify(e, r, box) {
   box.onpointerup = function () {
     box.onpointermove = box.onpointerup = box.onpointercancel = null;
     if (!segments.length) return;
-    var style = JSON.parse(JSON.stringify(effectiveStyle(r)));
-    var liquid = style.liquify || {size: liquifyTool.size, pressure: liquifyTool.pressure, strokes: []};
-    liquid.size = liquifyTool.size; liquid.pressure = liquifyTool.pressure;
-    liquid.strokes = liquid.strokes.concat(segments).slice(-200);
-    style.liquify = liquid; dirtyStyles[r.id] = style;
-    markCard(r.id); refreshPreviews(r); drawRegions(); select(r.id, false);
+    if (liquifyEditors[r.id]) liquifyEditors[r.id](segments);
+    else {
+      var style = JSON.parse(JSON.stringify(effectiveStyle(r)));
+      var liquid = style.liquify || {size: liquifyTool.size, pressure: liquifyTool.pressure, strokes: []};
+      liquid.size = liquifyTool.size; liquid.pressure = liquifyTool.pressure;
+      liquid.strokes = liquid.strokes.concat(segments).slice(-200);
+      style.liquify = liquid; dirtyStyles[r.id] = style;
+      markCard(r.id); refreshPreviews(r);
+    }
   };
   box.onpointercancel = function () { box.onpointermove = box.onpointerup = box.onpointercancel = null; };
 }
@@ -916,7 +920,7 @@ function applyWarpPreview(stack, warp, liquify) {
           var distance = Math.sqrt(ddx * ddx + ddy * ddy);
           var radius = Math.max(.001, stroke.radius || liquify.size / 100);
           if (distance < radius) {
-            var influence = Math.pow(1 - distance / radius, 2) *
+            var influence = Math.pow(1 - distance / radius, 2) * .28 *
               (stroke.pressure == null ? liquify.pressure / 100 : stroke.pressure);
             tx += stroke.dx * width * influence; ty += stroke.dy * height * influence;
           }
@@ -977,6 +981,7 @@ function applyMode() {
 function drawRegions() {
   var box = $("regions");
   box.innerHTML = "";
+  liquifyEditors = {};
   if (!page) return;
   page.regions.forEach(function (r) {
     var el = document.createElement("div");
@@ -1121,6 +1126,10 @@ function drawRegions() {
       updateLiquifyButton(); drawStage(); select(r.id, false);
     };
     liquifyClear.onclick = function () { liquifyStrokes = []; changeStyle(); updateLiquifyButton(); };
+    liquifyEditors[r.id] = function (segments) {
+      liquifyStrokes = liquifyStrokes.concat(segments).slice(-200);
+      changeStyle(); updateLiquifyButton();
+    };
     [liquifySize, liquifyPressure].forEach(function (input) {
       input.oninput = function () {
         if (liquifyTool && liquifyTool.id === r.id) {

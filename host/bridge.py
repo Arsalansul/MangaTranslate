@@ -158,7 +158,10 @@ def _liquify_map(region: dict, directory: str, index: int) -> dict:
                 distance = math.hypot(x - cx, y - cy)
                 if distance >= radius:
                     continue
-                influence = (1.0 - distance / radius) ** 2 * pressure
+                # Photoshop Forward Warp на среднем нажиме переносит область
+                # постепенно. Без коэффициента частые pointer-события
+                # складывались и один жест превращал слово в кашу.
+                influence = (1.0 - distance / radius) ** 2 * pressure * 0.28
                 at = y * width + x
                 vx[at] += float(stroke["dx"]) * rw * influence
                 vy[at] += float(stroke["dy"]) * rh * influence
