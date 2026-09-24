@@ -771,22 +771,7 @@ function refreshPreviews(r) {
       else blurPx = Math.max(1, style.blur.amount * .04);
     }
     stack.style.filter = blurPx ? ("blur(" + (blurPx * scale) + "px)") : "none";
-    if (style.warp) {
-      var w = style.warp, bend = w.bend / 100;
-      var sx = Math.max(.35, 1 + w.horizontal / 180);
-      var sy = Math.max(.35, 1 + w.vertical / 180);
-      var ax = w.direction === "vertical" ? bend * 38 : w.vertical * .12;
-      var ay = w.direction === "vertical" ? w.horizontal * .12 : -bend * 38;
-      var skewX = w.horizontal * .16, skewY = w.vertical * .16;
-      if (w.style === "wave" || w.style === "flag") skewY += bend * 24;
-      else if (w.style === "rise" || w.style === "shellLower" || w.style === "shellUpper") skewX += bend * 22;
-      else if (w.style === "bulge" || w.style === "inflate" || w.style === "fishEye") {
-        sx *= 1 + Math.abs(bend) * .3; sy *= 1 + bend * .22;
-      } else if (w.style === "squeeze" || w.style === "fish") sx *= 1 - Math.abs(bend) * .35;
-      stack.style.transform = "perspective(320px) rotateX(" + ax + "deg) rotateY(" + ay +
-        "deg) skew(" + skewX + "deg," + skewY + "deg) scale(" + sx + "," + sy + ")";
-      stack.style.transformOrigin = "center";
-    } else stack.style.transform = "none";
+    stack.style.transform = "none";
     var outlines = [].slice.call(stack.querySelectorAll(".preview-outline"));
     while (outlines.length < groups.length) {
       var extra = document.createElement("span"); extra.className = "preview-outline";
@@ -834,6 +819,58 @@ function refreshPreviews(r) {
     }
     span.style.textShadow = "none";
     fitPreview(preview, style.size, style.leading, r.font_px);
+    applyWarpPreview(stack, style.warp);
+  });
+}
+
+// Photoshop деформирует сетку глифов, а не прямоугольник слоя целиком.
+// В браузере повторяем характер пресетов на отдельных символах. Числа здесь
+// намеренно зависят от текущего кегля: при масштабировании страницы форма
+// остаётся той же, а не становится сильнее или слабее.
+function applyWarpPreview(stack, warp) {
+  if (!warp) return;
+  var fontSize = parseFloat(getComputedStyle(stack).fontSize) || 12;
+  var bend = warp.bend / 100, horizontal = warp.horizontal / 100;
+  var vertical = warp.vertical / 100, verticalMode = warp.direction === "vertical";
+  [].forEach.call(stack.children, function (layer) {
+    var text = layer.textContent, lines = text.split("\n");
+    layer.textContent = "";
+    lines.forEach(function (line, lineIndex) {
+      var count = Math.max(1, line.length - 1);
+      [].forEach.call(line, function (ch, index) {
+        var t = count ? index / count * 2 - 1 : 0;
+        var y = 0, x = horizontal * t * fontSize * .55;
+        var rotate = vertical * t * 14, scaleX = 1, scaleY = 1;
+        var arch = 1 - t * t;
+        switch (warp.style) {
+          case "arc": y = -bend * arch * fontSize * 1.25; rotate += bend * t * 38; break;
+          case "arcLower": y = bend * (t * t) * fontSize; rotate -= bend * t * 28; break;
+          case "arcUpper": y = -bend * (t * t) * fontSize; rotate += bend * t * 28; break;
+          case "arch": y = -bend * arch * fontSize * 1.45; break;
+          case "bulge": scaleY = 1 + bend * arch * .75; break;
+          case "shellLower": y = bend * t * t * fontSize; scaleY = 1 + bend * (t + 1) * .3; break;
+          case "shellUpper": y = -bend * t * t * fontSize; scaleY = 1 + bend * (1 - t) * .3; break;
+          case "flag": y = Math.sin((t + 1) * Math.PI) * bend * fontSize; rotate += Math.cos((t + 1) * Math.PI) * bend * 22; break;
+          case "wave": y = Math.sin((t + 1) * Math.PI * 2) * bend * fontSize * .7; rotate += Math.cos((t + 1) * Math.PI * 2) * bend * 18; break;
+          case "fish": y = -bend * t * arch * fontSize; scaleY = 1 + bend * arch * .35; break;
+          case "rise": y = -bend * (t + 1) * fontSize * .65; rotate += bend * 16; break;
+          case "fishEye": scaleX = 1 + bend * arch * .65; scaleY = 1 + bend * arch * .25; break;
+          case "inflate": scaleX = scaleY = 1 + bend * arch * .55; break;
+          case "squeeze": scaleX = Math.max(.3, 1 - Math.abs(bend) * arch * .65); break;
+          case "twist": y = Math.sin(t * Math.PI) * bend * fontSize; rotate += bend * t * 55; scaleY = 1 + bend * t * .3; break;
+        }
+        var char = document.createElement("span");
+        char.textContent = ch === " " ? "\u00a0" : ch;
+        char.style.display = "inline-block";
+        char.style.transformOrigin = "center";
+        var tx = verticalMode ? y : x, ty = verticalMode ? x : y;
+        var angle = verticalMode ? -rotate : rotate;
+        char.style.transform = "translate(" + tx + "px," + ty + "px) rotate(" + angle +
+          "deg) scale(" + scaleX + "," + scaleY + ")";
+        layer.appendChild(char);
+      });
+      if (lineIndex < lines.length - 1) layer.appendChild(document.createElement("br"));
+    });
   });
 }
 
