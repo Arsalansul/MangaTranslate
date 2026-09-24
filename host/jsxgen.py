@@ -529,14 +529,16 @@ step('typeset_all', function () {
       var startSize = Math.max(MIN_SIZE + 1, Math.round(r.size * 1.1));
       var fit = fitText(tl, r.sw, r.sh, startSize, MIN_SIZE, r.fixedSize, r.fixedLead);
       if (fit.textH < 0) overflow.push(r.id);
-      applyTextWarp(ti, r.warp);
-
       // Ставим настоящую рамку и центрируем текст по вертикали.
       ti.height = r.sh * K;
       var b = tl.bounds;
       var th = parseFloat(b[3]) - parseFloat(b[1]);
       var dy = r.keep ? 0 : Math.max(0, Math.round((r.sh - th) / 2));
       ti.position = [r.sx, r.sy + dy];
+      // Деформация применяется последней к уже подогнанному абзацному тексту:
+      // последующая смена размеров рамки в некоторых версиях Photoshop
+      // пересчитывает warp и визуально сводит его на нет.
+      applyTextWarp(ti, r.warp);
       applyBlur(r);
       applyLayerEffects(r);
       placed++;

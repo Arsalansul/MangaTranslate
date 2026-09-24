@@ -36,6 +36,8 @@ import run
 import translate
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(HERE, "ui.html"), "rb") as _ui_file:
+    UI_DATA = _ui_file.read()
 # 8765 занят CV-контейнером, берём соседний.
 PORT = 8766
 # Тело POST — это правки одной страницы, десятки коротких строк.
@@ -679,8 +681,11 @@ def api_font(query):
 
 
 def api_ui(query):
-    with open(os.path.join(HERE, "ui.html"), "rb") as f:
-        return "text/html; charset=utf-8", f.read()
+    # UI и Python API должны быть одной версии. Раньше HTML читался на каждый
+    # запрос: после обновления файлов старый процесс показывал новую панель, но
+    # молча выбрасывал незнакомые поля при сохранении. Теперь обновление
+    # интерфейса появляется только вместе с перезапуском сервера.
+    return "text/html; charset=utf-8", UI_DATA
 
 
 def api_pick_folder(body):

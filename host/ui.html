@@ -772,10 +772,19 @@ function refreshPreviews(r) {
     }
     stack.style.filter = blurPx ? ("blur(" + (blurPx * scale) + "px)") : "none";
     if (style.warp) {
-      var warpSign = style.warp.direction === "vertical" ? -1 : 1;
-      stack.style.transform = "skew(" + (style.warp.horizontal * .12) + "deg," +
-        (style.warp.vertical * .12) + "deg) rotate(" +
-        (style.warp.bend * .035 * warpSign) + "deg)";
+      var w = style.warp, bend = w.bend / 100;
+      var sx = Math.max(.35, 1 + w.horizontal / 180);
+      var sy = Math.max(.35, 1 + w.vertical / 180);
+      var ax = w.direction === "vertical" ? bend * 38 : w.vertical * .12;
+      var ay = w.direction === "vertical" ? w.horizontal * .12 : -bend * 38;
+      var skewX = w.horizontal * .16, skewY = w.vertical * .16;
+      if (w.style === "wave" || w.style === "flag") skewY += bend * 24;
+      else if (w.style === "rise" || w.style === "shellLower" || w.style === "shellUpper") skewX += bend * 22;
+      else if (w.style === "bulge" || w.style === "inflate" || w.style === "fishEye") {
+        sx *= 1 + Math.abs(bend) * .3; sy *= 1 + bend * .22;
+      } else if (w.style === "squeeze" || w.style === "fish") sx *= 1 - Math.abs(bend) * .35;
+      stack.style.transform = "perspective(320px) rotateX(" + ax + "deg) rotateY(" + ay +
+        "deg) skew(" + skewX + "deg," + skewY + "deg) scale(" + sx + "," + sy + ")";
       stack.style.transformOrigin = "center";
     } else stack.style.transform = "none";
     var outlines = [].slice.call(stack.querySelectorAll(".preview-outline"));
@@ -993,6 +1002,7 @@ function drawRegions() {
       input.oninput = changeStyle;
     });
     warpStyle.onchange = function () { updateWarpVisibility(); changeStyle(); };
+    warpDirection.onchange = changeStyle;
     updateWarpVisibility();
     var blurRow = document.createElement("div"); blurRow.className = "effects-grid blur-row";
     effects.appendChild(blurRow);
