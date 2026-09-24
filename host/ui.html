@@ -829,47 +829,61 @@ function refreshPreviews(r) {
 // остаётся той же, а не становится сильнее или слабее.
 function applyWarpPreview(stack, warp) {
   if (!warp) return;
-  var fontSize = parseFloat(getComputedStyle(stack).fontSize) || 12;
   var bend = warp.bend / 100, horizontal = warp.horizontal / 100;
   var vertical = warp.vertical / 100, verticalMode = warp.direction === "vertical";
   [].forEach.call(stack.children, function (layer) {
     var text = layer.textContent, lines = text.split("\n");
-    layer.textContent = "";
+    var chars = []; layer.textContent = "";
     lines.forEach(function (line, lineIndex) {
-      var count = Math.max(1, line.length - 1);
-      [].forEach.call(line, function (ch, index) {
-        var t = count ? index / count * 2 - 1 : 0;
-        var y = 0, x = horizontal * t * fontSize * .55;
-        var rotate = vertical * t * 14, scaleX = 1, scaleY = 1;
+      [].forEach.call(line, function (ch) {
+        var char = document.createElement("span");
+        char.textContent = ch === " " ? "\u00a0" : ch;
+        char.style.display = "inline-block"; char.style.transformOrigin = "center";
+        layer.appendChild(char); chars.push(char);
+      });
+      if (lineIndex < lines.length - 1) layer.appendChild(document.createElement("br"));
+    });
+    var bounds = layer.getBoundingClientRect();
+    var width = Math.max(1, layer.clientWidth), height = Math.max(1, layer.scrollHeight);
+    chars.forEach(function (char) {
+        var box = char.getBoundingClientRect();
+        var px = box.left - bounds.left + box.width / 2;
+        var py = box.top - bounds.top + box.height / 2;
+        var u = px / width * 2 - 1, v = py / height * 2 - 1;
+        var t = verticalMode ? v : u, cross = verticalMode ? u : v;
+        var along = verticalMode ? height : width, across = verticalMode ? width : height;
+        var da = 0, db = 0, rotate = 0, scaleX = 1, scaleY = 1;
         var arch = 1 - t * t;
         switch (warp.style) {
-          case "arc": y = -bend * arch * fontSize * 1.25; rotate += bend * t * 38; break;
-          case "arcLower": y = bend * (t * t) * fontSize; rotate -= bend * t * 28; break;
-          case "arcUpper": y = -bend * (t * t) * fontSize; rotate += bend * t * 28; break;
-          case "arch": y = -bend * arch * fontSize * 1.45; break;
+          case "arc": db = -bend * arch * across * .42; rotate = bend * t * 42; break;
+          case "arcLower": db = bend * t * t * across * .38; rotate = -bend * t * 30; break;
+          case "arcUpper": db = -bend * t * t * across * .38; rotate = bend * t * 30; break;
+          case "arch": db = -bend * arch * across * .48; break;
           case "bulge": scaleY = 1 + bend * arch * .75; break;
-          case "shellLower": y = bend * t * t * fontSize; scaleY = 1 + bend * (t + 1) * .3; break;
-          case "shellUpper": y = -bend * t * t * fontSize; scaleY = 1 + bend * (1 - t) * .3; break;
-          case "flag": y = Math.sin((t + 1) * Math.PI) * bend * fontSize; rotate += Math.cos((t + 1) * Math.PI) * bend * 22; break;
-          case "wave": y = Math.sin((t + 1) * Math.PI * 2) * bend * fontSize * .7; rotate += Math.cos((t + 1) * Math.PI * 2) * bend * 18; break;
-          case "fish": y = -bend * t * arch * fontSize; scaleY = 1 + bend * arch * .35; break;
-          case "rise": y = -bend * (t + 1) * fontSize * .65; rotate += bend * 16; break;
+          case "shellLower": db = bend * t * t * across * .32; scaleY = 1 + bend * (t + 1) * .3; break;
+          case "shellUpper": db = -bend * t * t * across * .32; scaleY = 1 + bend * (1 - t) * .3; break;
+          case "flag": db = Math.sin((t + 1) * Math.PI) * bend * across * .32; rotate = Math.cos((t + 1) * Math.PI) * bend * 24; break;
+          case "wave": db = Math.sin((t + 1) * Math.PI * 2) * bend * across * .25; rotate = Math.cos((t + 1) * Math.PI * 2) * bend * 20; break;
+          case "fish": db = -bend * t * arch * across * .4; scaleY = 1 + bend * arch * .35; break;
+          case "rise": db = -bend * (t + 1) * across * .35; rotate = bend * 18; break;
           case "fishEye": scaleX = 1 + bend * arch * .65; scaleY = 1 + bend * arch * .25; break;
           case "inflate": scaleX = scaleY = 1 + bend * arch * .55; break;
           case "squeeze": scaleX = Math.max(.3, 1 - Math.abs(bend) * arch * .65); break;
-          case "twist": y = Math.sin(t * Math.PI) * bend * fontSize; rotate += bend * t * 55; scaleY = 1 + bend * t * .3; break;
+          case "twist":
+            var radius = Math.min(1, Math.sqrt(u * u + v * v));
+            var theta = bend * Math.PI * .72 * (1 - radius * .28);
+            var nu = u * Math.cos(theta) - v * Math.sin(theta);
+            var nv = u * Math.sin(theta) + v * Math.cos(theta);
+            da = verticalMode ? (nv - v) * height / 2 : (nu - u) * width / 2;
+            db = verticalMode ? (nu - u) * width / 2 : (nv - v) * height / 2;
+            rotate = theta * 180 / Math.PI; break;
         }
-        var char = document.createElement("span");
-        char.textContent = ch === " " ? "\u00a0" : ch;
-        char.style.display = "inline-block";
-        char.style.transformOrigin = "center";
-        var tx = verticalMode ? y : x, ty = verticalMode ? x : y;
+        da += horizontal * cross * along * .12;
+        db += vertical * t * across * .12;
+        var tx = verticalMode ? db : da, ty = verticalMode ? da : db;
         var angle = verticalMode ? -rotate : rotate;
         char.style.transform = "translate(" + tx + "px," + ty + "px) rotate(" + angle +
           "deg) scale(" + scaleX + "," + scaleY + ")";
-        layer.appendChild(char);
-      });
-      if (lineIndex < lines.length - 1) layer.appendChild(document.createElement("br"));
     });
   });
 }
